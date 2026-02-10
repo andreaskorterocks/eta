@@ -1,0 +1,7 @@
+# Runtime-Dateien (werden auf dem Server generiert)
+eta/config.json
+eta/pellet_verbrauch.txt
+
+# OS
+.DS_Store
+Thumbs.db
