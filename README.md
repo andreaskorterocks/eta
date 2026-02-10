@@ -1,4 +1,5 @@
 # ETA Pellet Dashboard
+<img width="949" height="734" alt="image" src="https://github.com/user-attachments/assets/9a432950-1ebf-42a4-b700-865ac7815ef4" />
 
 Web-Dashboard zur Ueberwachung und Protokollierung des Pelletverbrauchs fuer ETA Pelletheizungen via ETAtouch RESTful API.
 
