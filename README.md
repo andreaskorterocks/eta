@@ -9,9 +9,11 @@ Web-Dashboard zur Ueberwachung und Protokollierung des Pelletverbrauchs fuer ETA
 ## Features
 
 - **Live-Dashboard** mit Hero-Anzeige (Lager Vorrat) und konfigurierbaren Kacheln
+- **Bestandsverlauf** als Linienchart - zeigt wie der Pelletvorrat ueber die Tage faellt
 - **Verbrauchsstatistik** mit Chart.js Diagrammen (taeglich/woechentlich/monatlich/jaehrlich)
 - **Menubaum-Browser** zum Durchsuchen aller Kessel-Variablen
 - **Konfigurierbares Dashboard** - Kacheln aus dem Menubaum hinzufuegen/entfernen, Hero-Variable aendern, URI-Pfade bearbeiten
+- **Kessel IP/Port konfigurierbar** ueber die Einstellungen (kein Editieren der PHP-Datei noetig)
 - **Logging** in Tab-separierte Textdatei (manuell + Cronjob)
 - **Responsive Design** fuer Desktop, Tablet und Smartphone
 - **Cronjob-Script** fuer automatische Datenerfassung via Synology Aufgabenplaner
@@ -31,11 +33,15 @@ Web-Dashboard zur Ueberwachung und Protokollierung des Pelletverbrauchs fuer ETA
    eta_log_cron.sh      # Cronjob-Script
    ```
 
-2. IP-Adresse des Kessels in `pellet_tracker.php` anpassen:
-   ```php
-   define('ETA_IP', '192.168.88.36');
-   define('ETA_PORT', 8080);
+2. `config.example.json` nach `config.json` kopieren und IP/Port des Kessels anpassen:
+   ```json
+   {
+       "eta_ip": "192.168.88.36",
+       "eta_port": 8080,
+       ...
+   }
    ```
+   Alternativ: IP und Port direkt ueber die Web-Oberflaeche unter **Einstellungen** konfigurieren.
 
 3. Schreibrechte fuer das Web-Verzeichnis sicherstellen (fuer `config.json` und `pellet_verbrauch.txt`)
 
@@ -49,7 +55,8 @@ Web-Dashboard zur Ueberwachung und Protokollierung des Pelletverbrauchs fuer ETA
 
 Die Dashboard-Konfiguration wird in `config.json` gespeichert und kann ueber die Web-Oberflaeche unter **Einstellungen** bearbeitet werden:
 
-- Hero-Variable und Kacheln mit Name + URI-Pfad
+- **ETA Kessel** - IP-Adresse und Port
+- **Hero-Variable** und Kacheln mit Name + URI-Pfad
 - Kacheln aus dem Menubaum per Klick hinzufuegen (+) oder als Hero setzen (★)
 - Kacheln auf dem Dashboard per X entfernen
 - Reset auf Standardkonfiguration
@@ -61,13 +68,15 @@ Bei einer neuen Heizung koennen alle URI-Pfade (`/node/fub/fkt/io/var`) ueber di
 ```
 ETA/
 ├── README.md
-├── .gitignore
-├── eta/                        # Web-Dateien (auf Webserver deployen)
-│   ├── pellet_tracker.php      # Dashboard + API
-│   ├── index.html              # Redirect
-│   └── eta_log_cron.sh         # Cronjob-Script
+├── LICENSE                         # MIT-Lizenz
+├── eta/                            # Web-Dateien (auf Webserver deployen)
+│   ├── pellet_tracker.php          # Dashboard + API
+│   ├── index.html                  # Redirect
+│   ├── eta_log_cron.sh             # Cronjob-Script
+│   ├── config.example.json         # Beispiel-Konfiguration
+│   └── pellet_verbrauch.example.txt # Beispiel-Logdatei
 └── REST_API_DOC/
-    └── ETA-RESTful-v1.2.pdf    # API-Dokumentation
+    └── ETA-RESTful-v1.2.pdf        # API-Dokumentation
 ```
 
 Laufzeitdateien (werden automatisch erstellt):
@@ -83,6 +92,14 @@ Nutzt die ETAtouch RESTful API v1.1/v1.2:
 Dokumentation: siehe `REST_API_DOC/`
 
 ## Changelog
+
+### v0.41 - Kleine Korrekturen
+- Bestandsverlauf als Linienchart (zeigt Lager Vorrat ueber die Tage)
+- Verbrauchsberechnung nutzt jetzt strValue statt rawValue (korrektes Ergebnis in kg)
+- ETA Kessel IP und Port ueber Einstellungen konfigurierbar
+- Cron-Script liest IP/Port aus config.json
+- Beispiel config.json und Logdatei beigefuegt
+- MIT-Lizenz hinzugefuegt
 
 ### v0.4 - ETA Dashboard
 - Konfigurierbares Dashboard mit `config.json`
