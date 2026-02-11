@@ -6,11 +6,17 @@
 #   Zeitplan: Taeglich um 06:00, 14:00, 22:00
 #   Skript: bash /volume1/web/eta/eta_log_cron.sh
 
-ETA_IP="192.168.88.36"
-ETA_PORT=8080
 BASE_DIR="/volume1/web/eta"
 LOG_FILE="$BASE_DIR/pellet_verbrauch.txt"
 CONFIG_FILE="$BASE_DIR/config.json"
+
+# IP/Port aus config.json lesen, Fallback auf Defaults
+if [ -f "$CONFIG_FILE" ]; then
+    ETA_IP=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c.get('eta_ip','192.168.88.36'))" 2>/dev/null)
+    ETA_PORT=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c.get('eta_port',8080))" 2>/dev/null)
+fi
+ETA_IP="${ETA_IP:-192.168.88.36}"
+ETA_PORT="${ETA_PORT:-8080}"
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 COUNT=0
