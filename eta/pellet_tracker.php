@@ -5,13 +5,13 @@
  */
 
 // ── Konfiguration ──────────────────────────────────────────────
-define('ETA_IP', '192.168.88.36');
-define('ETA_PORT', 8080);
 define('LOG_FILE', __DIR__ . '/pellet_verbrauch.txt');
 define('CONFIG_FILE', __DIR__ . '/config.json');
 
 // Standard-Konfiguration (wird verwendet wenn keine config.json existiert)
 define('DEFAULT_CONFIG', json_encode([
+    'eta_ip'   => '192.168.88.36',
+    'eta_port' => 8080,
     'hero' => [
         'uri'  => '/40/10201/0/0/12015',
         'name' => 'Lager Vorrat',
@@ -31,14 +31,18 @@ define('DEFAULT_CONFIG', json_encode([
  * Konfiguration laden (aus config.json oder Defaults)
  */
 function load_config(): array {
+    $defaults = json_decode(DEFAULT_CONFIG, true);
     if (file_exists(CONFIG_FILE)) {
         $json = file_get_contents(CONFIG_FILE);
         $config = json_decode($json, true);
         if (is_array($config) && isset($config['hero'], $config['tiles'])) {
+            // Fehlende Felder aus Defaults ergaenzen (Abwaertskompatibilitaet)
+            if (!isset($config['eta_ip']))   $config['eta_ip']   = $defaults['eta_ip'];
+            if (!isset($config['eta_port'])) $config['eta_port'] = $defaults['eta_port'];
             return $config;
         }
     }
-    return json_decode(DEFAULT_CONFIG, true);
+    return $defaults;
 }
 
 /**
@@ -56,7 +60,8 @@ $CONFIG = load_config();
  * HTTP GET Request an die ETA API (curl mit file_get_contents Fallback)
  */
 function eta_fetch(string $path): ?string {
-    $url = 'http://' . ETA_IP . ':' . ETA_PORT . $path;
+    global $CONFIG;
+    $url = 'http://' . $CONFIG['eta_ip'] . ':' . $CONFIG['eta_port'] . $path;
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -154,7 +159,8 @@ function read_log(int $limit = 50): array {
  * Gibt taeglich/woechentlich/monatlich/jaehrlich aggregierte Daten zurueck.
  */
 function calc_consumption(string $heroUri): array {
-    if (!file_exists(LOG_FILE)) return ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stock'=>[]];
+    $empty = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stockDaily'=>[]];
+    if (!file_exists(LOG_FILE)) return $empty;
 
     $lines = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     // Alle Lager-Vorrat-Eintraege chronologisch sammeln
@@ -166,11 +172,19 @@ function calc_consumption(string $heroUri): array {
         if ($uri !== $heroUri) continue;
         $ts = strtotime($parts[0]);
         if ($ts === false) continue;
-        $raw = floatval($parts[4]);
-        $readings[] = ['ts' => $ts, 'value' => $raw];
+        // strValue (parts[2]) verwenden, nicht rawValue (parts[4])
+        $val = floatval(str_replace(',', '.', $parts[2]));
+        $readings[] = ['ts' => $ts, 'value' => $val];
     }
 
-    if (count($readings) < 2) return ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stock'=>$readings];
+    if (count($readings) < 2) return $empty;
+
+    // Bestandsverlauf: letzter Wert pro Tag
+    $stockDaily = [];
+    foreach ($readings as $r) {
+        $day = date('Y-m-d', $r['ts']);
+        $stockDaily[$day] = $r['value'];
+    }
 
     // Verbrauch zwischen aufeinanderfolgenden Messungen berechnen
     $daily   = [];
@@ -208,8 +222,9 @@ function calc_consumption(string $heroUri): array {
     $weekly  = array_slice($weekly, -12, null, true);
     $monthly = array_slice($monthly, -12, null, true);
     $yearly  = array_slice($yearly, -5, null, true);
+    $stockDaily = array_slice($stockDaily, -60, null, true);
 
-    return compact('daily', 'weekly', 'monthly', 'yearly') + ['stock' => $readings];
+    return compact('daily', 'weekly', 'monthly', 'yearly', 'stockDaily');
 }
 
 /**
@@ -310,6 +325,11 @@ if ($action === 'reset') {
 
 // Einstellungen speichern (URI-Bearbeitung)
 if ($action === 'savesettings' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $etaIp   = trim($_POST['eta_ip'] ?? '');
+    $etaPort = trim($_POST['eta_port'] ?? '');
+    if ($etaIp)   $CONFIG['eta_ip']   = $etaIp;
+    if ($etaPort) $CONFIG['eta_port'] = intval($etaPort);
+
     $heroUri  = trim($_POST['hero_uri'] ?? '');
     $heroName = trim($_POST['hero_name'] ?? '');
     if ($heroUri && $heroName) {
@@ -496,7 +516,7 @@ if ($action === 'menu') {
 <body>
 <div class="container">
     <h1>ETA Pellet Tracker</h1>
-    <p class="subtitle">Kessel: <?=htmlspecialchars(ETA_IP)?>:<?=ETA_PORT?></p>
+    <p class="subtitle">Kessel: <?=htmlspecialchars($CONFIG['eta_ip'])?>:<?=intval($CONFIG['eta_port'])?></p>
 
     <nav>
         <a href="?action=dashboard" class="<?=$action==='dashboard'?'active':''?>">Dashboard</a>
@@ -559,10 +579,11 @@ if ($action === 'menu') {
         <div class="card">
             <h2>Pelletverbrauch</h2>
             <?php
-                $hasData = !empty($consumption['daily']) || !empty($consumption['weekly'])
+                $hasStock = !empty($consumption['stockDaily']);
+                $hasConsumption = !empty($consumption['daily']) || !empty($consumption['weekly'])
                         || !empty($consumption['monthly']) || !empty($consumption['yearly']);
             ?>
-            <?php if($hasData):?>
+            <?php if($hasStock || $hasConsumption):?>
                 <?php
                     $today     = date('Y-m-d');
                     $thisWeek  = date('o-\KW');
@@ -593,13 +614,15 @@ if ($action === 'menu') {
                 </div>
 
                 <div class="chart-tabs">
-                    <button class="active" onclick="showChart('daily',this)">Taeglich</button>
+                    <button class="active" onclick="showChart('stock',this)">Bestandsverlauf</button>
+                    <button onclick="showChart('daily',this)">Taeglich</button>
                     <button onclick="showChart('weekly',this)">Woechentlich</button>
                     <button onclick="showChart('monthly',this)">Monatlich</button>
                     <button onclick="showChart('yearly',this)">Jaehrlich</button>
                 </div>
                 <div class="chart-wrap">
-                    <canvas id="chart-daily" class="active"></canvas>
+                    <canvas id="chart-stock" class="active"></canvas>
+                    <canvas id="chart-daily"></canvas>
                     <canvas id="chart-weekly"></canvas>
                     <canvas id="chart-monthly"></canvas>
                     <canvas id="chart-yearly"></canvas>
@@ -607,6 +630,7 @@ if ($action === 'menu') {
 
                 <script>
                 const chartData = {
+                    stock:   {labels:<?=json_encode(array_keys($consumption['stockDaily']))?>,   data:<?=json_encode(array_values($consumption['stockDaily']))?>},
                     daily:   {labels:<?=json_encode(array_keys($consumption['daily']))?>,   data:<?=json_encode(array_values($consumption['daily']))?>},
                     weekly:  {labels:<?=json_encode(array_keys($consumption['weekly']))?>,  data:<?=json_encode(array_values($consumption['weekly']))?>},
                     monthly: {labels:<?=json_encode(array_keys($consumption['monthly']))?>, data:<?=json_encode(array_values($consumption['monthly']))?>},
@@ -615,17 +639,22 @@ if ($action === 'menu') {
                 const charts = {};
                 function makeChart(id, labels, data) {
                     const ctx = document.getElementById('chart-'+id).getContext('2d');
+                    const isStock = (id === 'stock');
                     charts[id] = new Chart(ctx, {
-                        type: 'bar',
+                        type: isStock ? 'line' : 'bar',
                         data: {
                             labels: labels,
                             datasets: [{
-                                label: 'Verbrauch (kg)',
+                                label: isStock ? 'Lager Vorrat (kg)' : 'Verbrauch (kg)',
                                 data: data,
-                                backgroundColor: 'rgba(233,69,96,0.7)',
-                                borderColor: '#e94560',
-                                borderWidth: 1,
-                                borderRadius: 4
+                                backgroundColor: isStock ? 'rgba(149,213,178,0.15)' : 'rgba(233,69,96,0.7)',
+                                borderColor: isStock ? '#95d5b2' : '#e94560',
+                                borderWidth: isStock ? 2 : 1,
+                                borderRadius: isStock ? 0 : 4,
+                                fill: isStock,
+                                tension: 0.3,
+                                pointBackgroundColor: isStock ? '#95d5b2' : undefined,
+                                pointRadius: isStock ? 4 : undefined
                             }]
                         },
                         options: {
@@ -641,7 +670,7 @@ if ($action === 'menu') {
                             },
                             scales: {
                                 x: {ticks:{color:'#888',maxRotation:45},grid:{color:'rgba(255,255,255,0.05)'}},
-                                y: {beginAtZero:true,ticks:{color:'#888',callback:function(v){return v+' kg'}},grid:{color:'rgba(255,255,255,0.08)'}}
+                                y: {beginAtZero:!isStock,ticks:{color:'#888',callback:function(v){return v+' kg'}},grid:{color:'rgba(255,255,255,0.08)'}}
                             }
                         }
                     });
@@ -653,8 +682,8 @@ if ($action === 'menu') {
                     document.getElementById('chart-'+id).classList.add('active');
                     if (!charts[id]) makeChart(id, chartData[id].labels, chartData[id].data);
                 }
-                if (chartData.daily.labels.length > 0) {
-                    makeChart('daily', chartData.daily.labels, chartData.daily.data);
+                if (chartData.stock.labels.length > 0) {
+                    makeChart('stock', chartData.stock.labels, chartData.stock.data);
                 }
                 </script>
             <?php else:?>
@@ -725,6 +754,19 @@ if ($action === 'menu') {
         <div class="card">
             <h2>Einstellungen</h2>
             <form method="post" action="?action=savesettings" class="settings-form">
+                <h3 style="color:#95d5b2;font-size:.95em;margin-bottom:4px">ETA Kessel</h3>
+                <div class="tile-row" style="grid-template-columns:2fr 1fr">
+                    <div>
+                        <label>IP-Adresse</label>
+                        <input type="text" name="eta_ip" value="<?=htmlspecialchars($CONFIG['eta_ip'])?>" placeholder="192.168.88.36">
+                    </div>
+                    <div>
+                        <label>Port</label>
+                        <input type="text" name="eta_port" value="<?=intval($CONFIG['eta_port'])?>" placeholder="8080">
+                    </div>
+                </div>
+
+                <div class="settings-section">
                 <h3 style="color:#95d5b2;font-size:.95em;margin-bottom:4px">Hero-Variable</h3>
                 <div class="tile-row" style="grid-template-columns:1fr 2fr">
                     <div>
@@ -735,6 +777,7 @@ if ($action === 'menu') {
                         <label>URI-Pfad</label>
                         <input type="text" name="hero_uri" value="<?=htmlspecialchars($CONFIG['hero']['uri'])?>">
                     </div>
+                </div>
                 </div>
 
                 <div class="settings-section">
