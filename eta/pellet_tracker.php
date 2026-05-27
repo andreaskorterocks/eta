@@ -8,7 +8,6 @@
 define('LOG_FILE', __DIR__ . '/pellet_verbrauch.txt');
 define('CONFIG_FILE', __DIR__ . '/config.json');
 
-// Standard-Konfiguration (wird verwendet wenn keine config.json existiert)
 define('DEFAULT_CONFIG', json_encode([
     'eta_ip'   => '192.168.88.36',
     'eta_port' => 8080,
@@ -23,42 +22,37 @@ define('DEFAULT_CONFIG', json_encode([
         ['uri' => '/40/10021/0/0/12012', 'name' => 'Verbrauch seit Entaschung'],
         ['uri' => '/40/10021/0/0/12013', 'name' => 'Verbrauch seit Aschebox leeren'],
         ['uri' => '/40/10021/0/0/12153', 'name' => 'Volllaststunden'],
-        ['uri' => '/120/10221/0/0/12197', 'name' => 'Aussentemperatur (Solar)'],
+    ],
+    'solar' => [
+        ['uri' => '/120/10221/0/0/12275', 'name' => 'Kollektor'],
+        ['uri' => '/120/10221/0/0/12197', 'name' => 'Außentemperatur'],
+        ['uri' => '/120/10251/0/0/12242', 'name' => 'Puffer oben'],
+        ['uri' => '/120/10251/0/0/12244', 'name' => 'Puffer unten'],
     ],
 ]));
 
-/**
- * Konfiguration laden (aus config.json oder Defaults)
- */
 function load_config(): array {
     $defaults = json_decode(DEFAULT_CONFIG, true);
     if (file_exists(CONFIG_FILE)) {
         $json = file_get_contents(CONFIG_FILE);
         $config = json_decode($json, true);
         if (is_array($config) && isset($config['hero'], $config['tiles'])) {
-            // Fehlende Felder aus Defaults ergaenzen (Abwaertskompatibilitaet)
             if (!isset($config['eta_ip']))   $config['eta_ip']   = $defaults['eta_ip'];
             if (!isset($config['eta_port'])) $config['eta_port'] = $defaults['eta_port'];
+            if (!isset($config['solar']))    $config['solar']    = $defaults['solar'];
             return $config;
         }
     }
     return $defaults;
 }
 
-/**
- * Konfiguration speichern
- */
 function save_config(array $config): bool {
     return file_put_contents(CONFIG_FILE, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) !== false;
 }
 
-// Konfiguration laden
 $CONFIG = load_config();
 // ────────────────────────────────────────────────────────────────
 
-/**
- * HTTP GET Request an die ETA API (curl mit file_get_contents Fallback)
- */
 function eta_fetch(string $path): ?string {
     global $CONFIG;
     $url = 'http://' . $CONFIG['eta_ip'] . ':' . $CONFIG['eta_port'] . $path;
@@ -79,9 +73,6 @@ function eta_fetch(string $path): ?string {
     return $response !== false ? $response : null;
 }
 
-/**
- * XML parsen - Namespace wird entfernt fuer einfacheren Zugriff
- */
 function parse_xml(string $xmlStr): ?SimpleXMLElement {
     $xmlStr = preg_replace('/\sxmlns="[^"]*"/', '', $xmlStr);
     libxml_use_internal_errors(true);
@@ -89,9 +80,6 @@ function parse_xml(string $xmlStr): ?SimpleXMLElement {
     return $xml ?: null;
 }
 
-/**
- * Liest eine einzelne Variable von der ETA API
- */
 function read_variable(string $uri): ?array {
     $response = eta_fetch('/user/var' . $uri);
     if ($response === null) return null;
@@ -101,36 +89,27 @@ function read_variable(string $uri): ?array {
     if (empty($values)) return null;
     $val = $values[0];
     return [
-        'uri'       => (string)($val['uri'] ?? ''),
-        'strValue'  => (string)($val['strValue'] ?? ''),
-        'unit'      => (string)($val['unit'] ?? ''),
-        'decPlaces' => (int)($val['decPlaces'] ?? 0),
+        'uri'         => (string)($val['uri'] ?? ''),
+        'strValue'    => (string)($val['strValue'] ?? ''),
+        'unit'        => (string)($val['unit'] ?? ''),
+        'decPlaces'   => (int)($val['decPlaces'] ?? 0),
         'scaleFactor' => (int)($val['scaleFactor'] ?? 1),
-        'rawValue'  => trim((string)$val),
+        'rawValue'    => trim((string)$val),
     ];
 }
 
-/**
- * Liest den Menubaum
- */
 function read_menu(): ?SimpleXMLElement {
     $response = eta_fetch('/user/menu');
     if ($response === null) return null;
     return parse_xml($response);
 }
 
-/**
- * Schreibt einen Eintrag in die Log-Datei
- */
 function log_value(string $uri, string $name, string $strValue, string $unit, string $rawValue, string $source = 'web'): void {
     $timestamp = date('Y-m-d H:i:s');
     $line = "$timestamp\t$name\t$strValue\t$unit\t$rawValue\t$uri\t$source\n";
     file_put_contents(LOG_FILE, $line, FILE_APPEND | LOCK_EX);
 }
 
-/**
- * Liest die letzten N Eintraege aus der Log-Datei
- */
 function read_log(int $limit = 50): array {
     if (!file_exists(LOG_FILE)) return [];
     $lines = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -153,17 +132,11 @@ function read_log(int $limit = 50): array {
     return $entries;
 }
 
-/**
- * Berechnet den Verbrauch aus den Lager-Vorrat-Logdaten.
- * Verbrauch = Rueckgang des Vorrats. Anstieg = Befuellung (wird ignoriert).
- * Gibt taeglich/woechentlich/monatlich/jaehrlich aggregierte Daten zurueck.
- */
 function calc_consumption(string $heroUri): array {
     $empty = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stockDaily'=>[]];
     if (!file_exists(LOG_FILE)) return $empty;
 
     $lines = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    // Alle Lager-Vorrat-Eintraege chronologisch sammeln
     $readings = [];
     foreach ($lines as $line) {
         $parts = explode("\t", $line);
@@ -186,18 +159,12 @@ function calc_consumption(string $heroUri): array {
         $stockDaily[$day] = $r['value'];
     }
 
-    // Verbrauch zwischen aufeinanderfolgenden Messungen berechnen
-    $daily   = [];
-    $weekly  = [];
-    $monthly = [];
-    $yearly  = [];
+    $daily = $weekly = $monthly = $yearly = [];
 
     for ($i = 1; $i < count($readings); $i++) {
         $prev = $readings[$i - 1];
         $curr = $readings[$i];
         $diff = $prev['value'] - $curr['value'];
-
-        // Nur Verbrauch zaehlen (positiver Diff = Vorrat gesunken)
         if ($diff <= 0) continue;
 
         $day   = date('Y-m-d', $curr['ts']);
@@ -211,25 +178,86 @@ function calc_consumption(string $heroUri): array {
         $yearly[$year]   = ($yearly[$year] ?? 0) + $diff;
     }
 
-    // Auf ganze kg runden
-    foreach ($daily as &$v)   $v = round($v);
-    foreach ($weekly as &$v)  $v = round($v);
+    foreach ($daily   as &$v) $v = round($v);
+    foreach ($weekly  as &$v) $v = round($v);
     foreach ($monthly as &$v) $v = round($v);
-    foreach ($yearly as &$v)  $v = round($v);
+    foreach ($yearly  as &$v) $v = round($v);
 
-    // Letzte N Eintraege behalten
-    $daily   = array_slice($daily, -30, null, true);
-    $weekly  = array_slice($weekly, -12, null, true);
+    $daily   = array_slice($daily,   -30, null, true);
+    $weekly  = array_slice($weekly,  -12, null, true);
     $monthly = array_slice($monthly, -12, null, true);
-    $yearly  = array_slice($yearly, -5, null, true);
+    $yearly     = array_slice($yearly,     -5,  null, true);
     $stockDaily = array_slice($stockDaily, -60, null, true);
 
     return compact('daily', 'weekly', 'monthly', 'yearly', 'stockDaily');
 }
 
 /**
- * Rekursiv Menubaum als HTML rendern (mit + Buttons)
+ * Baut Zeitreihen-Daten für den Solar-Tab.
+ * Gibt alle Messpunkte der letzten $hours Stunden zurück,
+ * aufgeteilt in Labels (Zeitstempel) und je eine Datenserie pro Variable.
  */
+function calc_solar_timeseries(array $solarConfig, int $hours = 168): array {
+    $empty = ['labels' => [], 'series' => [], 'current' => []];
+    if (!file_exists(LOG_FILE) || empty($solarConfig)) return $empty;
+
+    $uriMap = [];
+    foreach ($solarConfig as $s) {
+        $uriMap[$s['uri']] = $s['name'];
+    }
+    $targetUris = array_keys($uriMap);
+    $cutoff = time() - ($hours * 3600);
+
+    $lines = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $byTs  = [];
+
+    foreach ($lines as $line) {
+        $parts = explode("\t", $line);
+        if (count($parts) < 6) continue;
+        $uri = trim($parts[5]);
+        if (!in_array($uri, $targetUris)) continue;
+        $ts = strtotime($parts[0]);
+        if ($ts === false || $ts < $cutoff) continue;
+        $tsKey = $parts[0];
+        $value = floatval(str_replace(',', '.', $parts[2]));
+        $byTs[$tsKey][$uri] = $value;
+    }
+
+    ksort($byTs);
+    if (empty($byTs)) return $empty;
+
+    $labels = array_map(fn($k) => date('d.m H:i', strtotime($k)), array_keys($byTs));
+
+    $colorMap = [
+        '/120/10221/0/0/12275' => '#ff6b35',
+        '/120/10221/0/0/12197' => '#95d5b2',
+        '/120/10251/0/0/12242' => '#64b5f6',
+        '/120/10251/0/0/12244' => '#4488cc',
+    ];
+
+    $series  = [];
+    $current = [];
+    foreach ($targetUris as $uri) {
+        $data = [];
+        foreach ($byTs as $uriValues) {
+            $data[] = isset($uriValues[$uri]) ? $uriValues[$uri] : null;
+        }
+        $lastVal = null;
+        foreach (array_reverse($data) as $v) {
+            if ($v !== null) { $lastVal = $v; break; }
+        }
+        $series[] = [
+            'uri'   => $uri,
+            'name'  => $uriMap[$uri],
+            'data'  => $data,
+            'color' => $colorMap[$uri] ?? '#e94560',
+        ];
+        $current[$uri] = $lastVal;
+    }
+
+    return ['labels' => $labels, 'series' => $series, 'current' => $current];
+}
+
 function render_objects(SimpleXMLElement $parent, bool $showAddButtons = false): string {
     $html = '';
     $objects = $parent->object ?? [];
@@ -261,12 +289,10 @@ $varUri  = $_GET['uri'] ?? $CONFIG['hero']['uri'];
 $message = '';
 $error   = '';
 
-// Kachel hinzufuegen (aus Menubaum)
 if ($action === 'addtile' && isset($_GET['uri'], $_GET['name'])) {
     $newUri  = $_GET['uri'];
     $newName = $_GET['name'];
-    // Pruefen ob bereits vorhanden (als Hero oder Tile)
-    $exists = ($CONFIG['hero']['uri'] === $newUri);
+    $exists  = ($CONFIG['hero']['uri'] === $newUri);
     foreach ($CONFIG['tiles'] as $t) {
         if ($t['uri'] === $newUri) { $exists = true; break; }
     }
@@ -280,7 +306,6 @@ if ($action === 'addtile' && isset($_GET['uri'], $_GET['name'])) {
     $action = 'dashboard';
 }
 
-// Kachel entfernen
 if ($action === 'deltile' && isset($_GET['idx'])) {
     $idx = (int)$_GET['idx'];
     if (isset($CONFIG['tiles'][$idx])) {
@@ -292,11 +317,9 @@ if ($action === 'deltile' && isset($_GET['idx'])) {
     $action = 'dashboard';
 }
 
-// Hero-Variable setzen (aus Menubaum)
 if ($action === 'sethero' && isset($_GET['uri'], $_GET['name'])) {
     $newUri  = $_GET['uri'];
     $newName = $_GET['name'];
-    // Alte Hero in Tiles verschieben, falls nicht schon drin
     $oldHero = $CONFIG['hero'];
     $alreadyTile = false;
     foreach ($CONFIG['tiles'] as $t) {
@@ -305,7 +328,6 @@ if ($action === 'sethero' && isset($_GET['uri'], $_GET['name'])) {
     if (!$alreadyTile) {
         $CONFIG['tiles'][] = $oldHero;
     }
-    // Neue Hero aus Tiles entfernen falls vorhanden
     $CONFIG['tiles'] = array_values(array_filter($CONFIG['tiles'], function($t) use ($newUri) {
         return $t['uri'] !== $newUri;
     }));
@@ -315,7 +337,6 @@ if ($action === 'sethero' && isset($_GET['uri'], $_GET['name'])) {
     $action = 'dashboard';
 }
 
-// Konfiguration zuruecksetzen
 if ($action === 'reset') {
     $CONFIG = json_decode(DEFAULT_CONFIG, true);
     save_config($CONFIG);
@@ -323,7 +344,6 @@ if ($action === 'reset') {
     $action = 'settings';
 }
 
-// Einstellungen speichern (URI-Bearbeitung)
 if ($action === 'savesettings' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $etaIp   = trim($_POST['eta_ip'] ?? '');
     $etaPort = trim($_POST['eta_port'] ?? '');
@@ -337,41 +357,61 @@ if ($action === 'savesettings' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     $tileUris  = $_POST['tile_uri'] ?? [];
     $tileNames = $_POST['tile_name'] ?? [];
-    $newTiles = [];
+    $newTiles  = [];
     for ($i = 0; $i < count($tileUris); $i++) {
         $u = trim($tileUris[$i] ?? '');
         $n = trim($tileNames[$i] ?? '');
-        if ($u && $n) {
-            $newTiles[] = ['uri' => $u, 'name' => $n];
-        }
+        if ($u && $n) $newTiles[] = ['uri' => $u, 'name' => $n];
     }
     $CONFIG['tiles'] = $newTiles;
+
+    $solarUris  = $_POST['solar_uri'] ?? [];
+    $solarNames = $_POST['solar_name'] ?? [];
+    $newSolar   = [];
+    for ($i = 0; $i < count($solarUris); $i++) {
+        $u = trim($solarUris[$i] ?? '');
+        $n = trim($solarNames[$i] ?? '');
+        if ($u && $n) $newSolar[] = ['uri' => $u, 'name' => $n];
+    }
+    $CONFIG['solar'] = $newSolar;
+
     save_config($CONFIG);
     $message = "Einstellungen gespeichert.";
-    $action = 'settings';
+    $action   = 'settings';
 }
 
-// Alle Variablen abrufen + loggen
 if ($action === 'fetchall') {
-    $count = 0;
-    // Hero-Variable zuerst
+    $count      = 0;
+    $loggedUris = [];
+
     $data = read_variable($CONFIG['hero']['uri']);
     if ($data) {
         log_value($CONFIG['hero']['uri'], $CONFIG['hero']['name'], $data['strValue'], $data['unit'], $data['rawValue']);
+        $loggedUris[] = $CONFIG['hero']['uri'];
         $count++;
     }
     foreach ($CONFIG['tiles'] as $tile) {
+        if (in_array($tile['uri'], $loggedUris)) continue;
         $data = read_variable($tile['uri']);
         if ($data) {
             log_value($tile['uri'], $tile['name'], $data['strValue'], $data['unit'], $data['rawValue']);
+            $loggedUris[] = $tile['uri'];
+            $count++;
+        }
+    }
+    foreach ($CONFIG['solar'] ?? [] as $s) {
+        if (in_array($s['uri'], $loggedUris)) continue;
+        $data = read_variable($s['uri']);
+        if ($data) {
+            log_value($s['uri'], $s['name'], $data['strValue'], $data['unit'], $data['rawValue']);
+            $loggedUris[] = $s['uri'];
             $count++;
         }
     }
     $message = "$count Variablen erfolgreich abgerufen und geloggt.";
-    $action = 'dashboard';
+    $action  = 'dashboard';
 }
 
-// Einzelne Variable abrufen + loggen
 if ($action === 'fetch') {
     $data = read_variable($varUri);
     if ($data) {
@@ -388,8 +428,7 @@ if ($action === 'fetch') {
     $action = 'dashboard';
 }
 
-// Dashboard: Hero + alle konfigurierten Variablen lesen
-$heroData = null;
+$heroData      = null;
 $dashboardData = [];
 if ($action === 'dashboard') {
     $heroData = read_variable($CONFIG['hero']['uri']);
@@ -403,13 +442,16 @@ if ($action === 'dashboard') {
     }
 }
 
-// Verbrauch berechnen
 $consumption = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stock'=>[]];
 if ($action === 'verbrauch') {
     $consumption = calc_consumption($CONFIG['hero']['uri']);
 }
 
-// Menubaum laden
+$solarTimeseries = ['labels' => [], 'series' => [], 'current' => []];
+if ($action === 'solar') {
+    $solarTimeseries = calc_solar_timeseries($CONFIG['solar'] ?? []);
+}
+
 $menuXml = null;
 if ($action === 'menu') {
     $menuXml = read_menu();
@@ -421,7 +463,9 @@ if ($action === 'menu') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETA Pellet Tracker</title>
-    <?php if($action==='verbrauch'):?><script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script><?php endif?>
+    <?php if($action==='verbrauch'||$action==='solar'):?>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+    <?php endif?>
     <style>
         *{box-sizing:border-box;margin:0;padding:0}
         body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;-webkit-text-size-adjust:100%}
@@ -483,6 +527,25 @@ if ($action === 'menu') {
         .cons-item .cons-val{font-size:1.3em;font-weight:bold;color:#e94560;margin-top:2px}
         .cons-item .cons-unit{font-size:.55em;color:#888}
         .no-data{color:#888;text-align:center;padding:30px 0;font-size:.9em}
+        /* Solar */
+        .solar-summary{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px}
+        .solar-card{border-radius:8px;padding:12px;text-align:center;position:relative}
+        .solar-card .s-label{font-size:.7em;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+        .solar-card .s-val{font-size:2em;font-weight:bold;line-height:1.1}
+        .solar-card .s-unit{font-size:.4em;margin-left:3px;color:#888}
+        .solar-kollektor{background:linear-gradient(135deg,#3d1a00,#1a0a00);border:1px solid #ff6b35}
+        .solar-kollektor .s-label{color:#ff6b35}
+        .solar-kollektor .s-val{color:#ff6b35}
+        .solar-aussen{background:linear-gradient(135deg,#1b3a2e,#0f2419);border:1px solid #95d5b2}
+        .solar-aussen .s-label{color:#95d5b2}
+        .solar-aussen .s-val{color:#95d5b2}
+        .solar-puffer-oben{background:linear-gradient(135deg,#0d2a4a,#071825);border:1px solid #64b5f6}
+        .solar-puffer-oben .s-label{color:#64b5f6}
+        .solar-puffer-oben .s-val{color:#64b5f6}
+        .solar-puffer-unten{background:linear-gradient(135deg,#0a1e3a,#050f1e);border:1px solid #4488cc}
+        .solar-puffer-unten .s-label{color:#4488cc}
+        .solar-puffer-unten .s-val{color:#4488cc}
+        .solar-chart-wrap{position:relative;height:280px}
         /* Settings */
         .settings-form label{display:block;color:#95d5b2;font-size:.8em;margin-bottom:3px;margin-top:12px}
         .settings-form input[type="text"]{width:100%;padding:8px 10px;background:#0f3460;color:#eee;border:1px solid #333;border-radius:6px;font-size:.9em;font-family:inherit}
@@ -500,16 +563,20 @@ if ($action === 'menu') {
             .var-grid{grid-template-columns:repeat(3,1fr);gap:12px}
             .var-card .var-value{font-size:1.5em}
             .chart-wrap{height:300px}
+            .solar-chart-wrap{height:320px}
             .consumption-summary{gap:10px}
             .cons-item .cons-val{font-size:1.6em}
             th,td{padding:8px 12px;font-size:.9em}
             .tile-row{grid-template-columns:1fr 2.5fr 30px}
+            .solar-summary{grid-template-columns:repeat(4,1fr)}
+            .solar-card .s-val{font-size:2.2em}
         }
         /* Desktop */
         @media(min-width:900px){
             .hero-card .hero-value{font-size:6em}
             .var-grid{grid-template-columns:repeat(4,1fr)}
             .chart-wrap{height:350px}
+            .solar-chart-wrap{height:360px}
         }
     </style>
 </head>
@@ -521,9 +588,10 @@ if ($action === 'menu') {
     <nav>
         <a href="?action=dashboard" class="<?=$action==='dashboard'?'active':''?>">Dashboard</a>
         <a href="?action=verbrauch" class="<?=$action==='verbrauch'?'active':''?>">Verbrauch</a>
-        <a href="?action=log" class="<?=$action==='log'?'active':''?>">Log</a>
-        <a href="?action=menu" class="<?=$action==='menu'?'active':''?>">Menubaum</a>
-        <a href="?action=settings" class="<?=$action==='settings'?'active':''?>">Einstellungen</a>
+        <a href="?action=solar"     class="<?=$action==='solar'?'active':''?>">Solar</a>
+        <a href="?action=log"       class="<?=$action==='log'?'active':''?>">Log</a>
+        <a href="?action=menu"      class="<?=$action==='menu'?'active':''?>">Menubaum</a>
+        <a href="?action=settings"  class="<?=$action==='settings'?'active':''?>">Einstellungen</a>
     </nav>
 
     <?php if($message):?><div class="msg success"><?=htmlspecialchars($message)?></div><?php endif?>
@@ -531,7 +599,6 @@ if ($action === 'menu') {
 
     <?php if($action==='dashboard'):?>
 
-        <!-- Hero -->
         <div class="hero-card">
             <div class="hero-label"><?=htmlspecialchars($CONFIG['hero']['name'])?></div>
             <?php if($heroData):?>
@@ -545,7 +612,6 @@ if ($action === 'menu') {
             <div class="hero-uri"><?=htmlspecialchars($CONFIG['hero']['uri'])?></div>
         </div>
 
-        <!-- Kacheln -->
         <div class="card">
             <h2>Details</h2>
             <?php if(!empty($dashboardData)):?>
@@ -575,7 +641,6 @@ if ($action === 'menu') {
 
     <?php elseif($action==='verbrauch'):?>
 
-        <!-- Verbrauch -->
         <div class="card">
             <h2>Pelletverbrauch</h2>
             <?php
@@ -662,11 +727,7 @@ if ($action === 'menu') {
                             maintainAspectRatio: false,
                             plugins: {
                                 legend: {display: false},
-                                tooltip: {
-                                    callbacks: {
-                                        label: function(ctx) { return ctx.parsed.y + ' kg'; }
-                                    }
-                                }
+                                tooltip: {callbacks: {label: ctx => ctx.parsed.y + ' kg'}}
                             },
                             scales: {
                                 x: {ticks:{color:'#888',maxRotation:45},grid:{color:'rgba(255,255,255,0.05)'}},
@@ -690,6 +751,126 @@ if ($action === 'menu') {
                 <div class="no-data">
                     Noch keine Verbrauchsdaten vorhanden.<br>
                     <small>Der Cronjob muss mindestens 2x gelaufen sein, damit ein Verbrauch berechnet werden kann.</small>
+                </div>
+            <?php endif?>
+        </div>
+
+    <?php elseif($action==='solar'):?>
+
+        <div class="card">
+            <h2>Solaranlage</h2>
+
+            <?php
+                $sc = $solarTimeseries['current'];
+                $solarVarMap = [];
+                foreach ($CONFIG['solar'] ?? [] as $s) $solarVarMap[$s['uri']] = $s['name'];
+                $kollUri  = '/120/10221/0/0/12275';
+                $aussenUri= '/120/10221/0/0/12197';
+                $pufOUri  = '/120/10251/0/0/12242';
+                $pufUUri  = '/120/10251/0/0/12244';
+                $fmtVal = fn($v) => $v !== null ? number_format($v, 1, ',', '.') : '--';
+            ?>
+
+            <div class="solar-summary">
+                <div class="solar-card solar-kollektor">
+                    <div class="s-label">Kollektor</div>
+                    <div class="s-val"><?=$fmtVal($sc[$kollUri] ?? null)?><span class="s-unit">°C</span></div>
+                </div>
+                <div class="solar-card solar-aussen">
+                    <div class="s-label">Außentemperatur</div>
+                    <div class="s-val"><?=$fmtVal($sc[$aussenUri] ?? null)?><span class="s-unit">°C</span></div>
+                </div>
+                <div class="solar-card solar-puffer-oben">
+                    <div class="s-label">Puffer oben</div>
+                    <div class="s-val"><?=$fmtVal($sc[$pufOUri] ?? null)?><span class="s-unit">°C</span></div>
+                </div>
+                <div class="solar-card solar-puffer-unten">
+                    <div class="s-label">Puffer unten</div>
+                    <div class="s-val"><?=$fmtVal($sc[$pufUUri] ?? null)?><span class="s-unit">°C</span></div>
+                </div>
+            </div>
+
+            <?php if(!empty($solarTimeseries['labels'])):?>
+                <div class="chart-tabs">
+                    <button class="active" onclick="setSolarRange(24,this)">24 Stunden</button>
+                    <button onclick="setSolarRange(48,this)">48 Stunden</button>
+                    <button onclick="setSolarRange(168,this)">7 Tage</button>
+                </div>
+                <div class="solar-chart-wrap">
+                    <canvas id="solar-chart"></canvas>
+                </div>
+
+                <script>
+                const solarAllLabels = <?=json_encode($solarTimeseries['labels'])?>;
+                const solarSeries    = <?=json_encode(array_map(fn($s)=>['name'=>$s['name'],'data'=>$s['data'],'color'=>$s['color']], $solarTimeseries['series']))?>;
+                let solarChart = null;
+
+                function setSolarRange(range, btn) {
+                    document.querySelectorAll('.chart-tabs button').forEach(b=>b.classList.remove('active'));
+                    btn.classList.add('active');
+                    buildSolarChart(range);
+                }
+
+                function buildSolarChart(range) {
+                    const n      = solarAllLabels.length;
+                    const start  = Math.max(0, n - range);
+                    const labels = solarAllLabels.slice(start);
+                    const datasets = solarSeries.map(s => ({
+                        label:           s.name,
+                        data:            s.data.slice(start),
+                        borderColor:     s.color,
+                        backgroundColor: s.color + '18',
+                        borderWidth:     2,
+                        pointRadius:     range <= 48 ? 3 : 1,
+                        pointHoverRadius:5,
+                        fill:            false,
+                        tension:         0.35,
+                        spanGaps:        true
+                    }));
+
+                    if (solarChart) solarChart.destroy();
+                    const ctx = document.getElementById('solar-chart').getContext('2d');
+                    solarChart = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            responsive:          true,
+                            maintainAspectRatio: false,
+                            interaction: { mode:'index', intersect:false },
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    labels:  { color:'#eee', boxWidth:12, font:{size:11} }
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: ctx => {
+                                            const v = ctx.parsed.y;
+                                            return ctx.dataset.label + ': ' + (v !== null ? v.toFixed(1) + ' °C' : '--');
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    ticks: { color:'#888', maxRotation:45, maxTicksLimit:24 },
+                                    grid:  { color:'rgba(255,255,255,0.05)' }
+                                },
+                                y: {
+                                    ticks: { color:'#888', callback: v => v + ' °C' },
+                                    grid:  { color:'rgba(255,255,255,0.08)' }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                buildSolarChart(24);
+                </script>
+            <?php else:?>
+                <div class="no-data">
+                    Noch keine Solardaten im Log vorhanden.<br>
+                    <small>Sobald der stündliche Cronjob gelaufen ist, erscheinen hier die Temperaturkurven.</small>
                 </div>
             <?php endif?>
         </div>
@@ -781,7 +962,7 @@ if ($action === 'menu') {
                 </div>
 
                 <div class="settings-section">
-                    <h3 style="color:#95d5b2;font-size:.95em;margin-bottom:8px">Kacheln</h3>
+                    <h3 style="color:#95d5b2;font-size:.95em;margin-bottom:8px">Dashboard-Kacheln</h3>
                     <div id="tiles-list">
                     <?php foreach($CONFIG['tiles'] as $i => $tile):?>
                         <div class="tile-row">
@@ -800,6 +981,27 @@ if ($action === 'menu') {
                     <a href="#" class="btn btn-sm btn-outline" onclick="addTileRow();return false">+ Kachel hinzufuegen</a>
                 </div>
 
+                <div class="settings-section">
+                    <h3 style="color:#95d5b2;font-size:.95em;margin-bottom:8px">Solar-Variablen</h3>
+                    <p style="color:#888;font-size:.8em;margin-bottom:10px">Diese Variablen werden stündlich geloggt und im Solar-Tab als Kurve dargestellt.</p>
+                    <div id="solar-list">
+                    <?php foreach($CONFIG['solar'] ?? [] as $i => $s):?>
+                        <div class="tile-row">
+                            <div>
+                                <?php if($i===0):?><label>Name</label><?php endif?>
+                                <input type="text" name="solar_name[]" value="<?=htmlspecialchars($s['name'])?>">
+                            </div>
+                            <div>
+                                <?php if($i===0):?><label>URI-Pfad</label><?php endif?>
+                                <input type="text" name="solar_uri[]" value="<?=htmlspecialchars($s['uri'])?>">
+                            </div>
+                            <a href="#" class="btn-del-inline" onclick="this.parentElement.remove();return false">&times;</a>
+                        </div>
+                    <?php endforeach?>
+                    </div>
+                    <a href="#" class="btn btn-sm btn-outline" onclick="addSolarRow();return false">+ Solar-Variable hinzufuegen</a>
+                </div>
+
                 <div class="settings-section" style="display:flex;gap:8px;flex-wrap:wrap">
                     <button type="submit" class="btn">Speichern</button>
                     <a href="?action=reset" class="btn btn-outline" onclick="return confirm('Dashboard auf Standard zuruecksetzen?')">Auf Standard zuruecksetzen</a>
@@ -814,6 +1016,15 @@ if ($action === 'menu') {
             row.className = 'tile-row';
             row.innerHTML = '<div><input type="text" name="tile_name[]" placeholder="Name"></div>'
                 + '<div><input type="text" name="tile_uri[]" placeholder="/node/fub/fkt/io/var"></div>'
+                + '<a href="#" class="btn-del-inline" onclick="this.parentElement.remove();return false">&times;</a>';
+            list.appendChild(row);
+        }
+        function addSolarRow() {
+            const list = document.getElementById('solar-list');
+            const row = document.createElement('div');
+            row.className = 'tile-row';
+            row.innerHTML = '<div><input type="text" name="solar_name[]" placeholder="Name"></div>'
+                + '<div><input type="text" name="solar_uri[]" placeholder="/node/fub/fkt/io/var"></div>'
                 + '<a href="#" class="btn-del-inline" onclick="this.parentElement.remove();return false">&times;</a>';
             list.appendChild(row);
         }

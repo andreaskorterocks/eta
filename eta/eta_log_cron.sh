@@ -1,9 +1,9 @@
 #!/bin/bash
 # ETA Pellet Tracker - Cronjob Script
-# Ruft alle Variablen aus der config.json ab und loggt sie in die TXT-Datei.
+# Ruft alle Variablen (Hero, Tiles, Solar) aus der config.json ab und loggt sie.
 # Einrichtung im Synology Aufgabenplaner:
 #   Systemsteuerung > Aufgabenplaner > Erstellen > Geplante Aufgabe > Benutzerdefiniertes Skript
-#   Zeitplan: Taeglich um 06:00, 14:00, 22:00
+#   Zeitplan: Stündlich (jede Stunde)
 #   Skript: bash /volume1/web/eta/eta_log_cron.sh
 
 BASE_DIR="/volume1/web/eta"
@@ -20,8 +20,8 @@ ETA_PORT="${ETA_PORT:-8080}"
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 COUNT=0
+LOGGED_URIS=""
 
-# Funktion: Variable von ETA API abrufen und loggen
 fetch_and_log() {
     local URI="$1"
     local NAME="$2"
@@ -31,42 +31,54 @@ fetch_and_log() {
         return
     fi
 
-    # strValue extrahieren
     STR_VALUE=$(echo "$XML" | sed -n 's/.*strValue="\([^"]*\)".*/\1/p')
-    # unit extrahieren
     UNIT=$(echo "$XML" | sed -n 's/.*unit="\([^"]*\)".*/\1/p')
-    # Rohwert extrahieren (Inhalt zwischen >...</value>)
     RAW_VALUE=$(echo "$XML" | sed -n 's/.*<value[^>]*>\([^<]*\)<\/value>.*/\1/p')
 
     if [ -n "$STR_VALUE" ]; then
         echo -e "${TIMESTAMP}\t${NAME}\t${STR_VALUE}\t${UNIT}\t${RAW_VALUE}\t${URI}\tcron" >> "$LOG_FILE"
         COUNT=$((COUNT + 1))
+        LOGGED_URIS="${LOGGED_URIS}|${URI}"
     fi
 }
 
-# Config lesen (falls vorhanden, sonst Fallback auf Defaults)
-if [ -f "$CONFIG_FILE" ]; then
-    # Hero-Variable auslesen
-    HERO_URI=$(cat "$CONFIG_FILE" | python3 -c "import sys,json;c=json.load(sys.stdin);print(c['hero']['uri'])" 2>/dev/null)
-    HERO_NAME=$(cat "$CONFIG_FILE" | python3 -c "import sys,json;c=json.load(sys.stdin);print(c['hero']['name'])" 2>/dev/null)
+already_logged() {
+    echo "$LOGGED_URIS" | grep -qF "|$1"
+}
 
+if [ -f "$CONFIG_FILE" ]; then
+    # Hero
+    HERO_URI=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c['hero']['uri'])" 2>/dev/null)
+    HERO_NAME=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c['hero']['name'])" 2>/dev/null)
     if [ -n "$HERO_URI" ] && [ -n "$HERO_NAME" ]; then
         fetch_and_log "$HERO_URI" "$HERO_NAME"
     fi
 
-    # Tiles auslesen
-    TILE_COUNT=$(cat "$CONFIG_FILE" | python3 -c "import sys,json;c=json.load(sys.stdin);print(len(c['tiles']))" 2>/dev/null)
+    # Tiles
+    TILE_COUNT=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(len(c['tiles']))" 2>/dev/null)
     if [ -n "$TILE_COUNT" ]; then
         for i in $(seq 0 $((TILE_COUNT - 1))); do
-            TILE_URI=$(cat "$CONFIG_FILE" | python3 -c "import sys,json;c=json.load(sys.stdin);print(c['tiles'][$i]['uri'])" 2>/dev/null)
-            TILE_NAME=$(cat "$CONFIG_FILE" | python3 -c "import sys,json;c=json.load(sys.stdin);print(c['tiles'][$i]['name'])" 2>/dev/null)
-            if [ -n "$TILE_URI" ] && [ -n "$TILE_NAME" ]; then
+            TILE_URI=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c['tiles'][$i]['uri'])" 2>/dev/null)
+            TILE_NAME=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c['tiles'][$i]['name'])" 2>/dev/null)
+            if [ -n "$TILE_URI" ] && [ -n "$TILE_NAME" ] && ! already_logged "$TILE_URI"; then
                 fetch_and_log "$TILE_URI" "$TILE_NAME"
             fi
         done
     fi
+
+    # Solar-Variablen
+    SOLAR_COUNT=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(len(c.get('solar',[])))" 2>/dev/null)
+    if [ -n "$SOLAR_COUNT" ] && [ "$SOLAR_COUNT" -gt 0 ]; then
+        for i in $(seq 0 $((SOLAR_COUNT - 1))); do
+            SOLAR_URI=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c['solar'][$i]['uri'])" 2>/dev/null)
+            SOLAR_NAME=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(c['solar'][$i]['name'])" 2>/dev/null)
+            if [ -n "$SOLAR_URI" ] && [ -n "$SOLAR_NAME" ] && ! already_logged "$SOLAR_URI"; then
+                fetch_and_log "$SOLAR_URI" "$SOLAR_NAME"
+            fi
+        done
+    fi
 else
-    # Fallback: Hardcoded Defaults (falls config.json nicht existiert)
+    # Fallback: Hardcoded Defaults
     VARS=(
         "/40/10201/0/0/12015|Lager Vorrat"
         "/40/10021/0/0/12016|Gesamtverbrauch"
@@ -75,9 +87,11 @@ else
         "/40/10021/0/0/12012|Verbrauch seit Entaschung"
         "/40/10021/0/0/12013|Verbrauch seit Aschebox leeren"
         "/40/10021/0/0/12153|Volllaststunden"
-        "/120/10221/0/0/12197|Aussentemperatur (Solar)"
+        "/120/10221/0/0/12275|Kollektor"
+        "/120/10221/0/0/12197|Außentemperatur"
+        "/120/10251/0/0/12242|Puffer oben"
+        "/120/10251/0/0/12244|Puffer unten"
     )
-
     for entry in "${VARS[@]}"; do
         URI="${entry%%|*}"
         NAME="${entry##*|}"
