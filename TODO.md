@@ -23,10 +23,15 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
          Beide Male muss das Lager leer gewesen sein, sonst passt der Vergleich nicht.
       4. Faktor = tatsächlich verbraucht / laut Zähler. Erst dann als Korrektur einbauen — vorher
          nicht raten.
-- [ ] **Datendateien liegen im Web-Dokumentenstamm** (`/volume1/web/eta/`): `pellet_verbrauch.txt`,
-      `pellet_events.txt` und `config.json` sind damit per HTTP abrufbar. Keine Secrets darin, aber
-      `config.json` verrät IP und Port des Kessels. Verschieben nach `/volume1/homes/andreas/private-data/eta/`
-      wäre die saubere Variante (siehe Web-Station-Regel in `~/dev/CLAUDE.md`).
+
+## Bewusst entschieden
+
+- **Datendateien bleiben im Web-Dokumentenstamm** (`/volume1/web/eta/`): `pellet_verbrauch.txt`,
+  `pellet_events.txt` und `config.json` sind damit per HTTP abrufbar. Entscheidung vom 20.09.2026:
+  bleibt so, weil das Dashboard nur im lokalen Netz läuft und keine Passwörter in den Dateien stehen —
+  lediglich IP und Port des Kessels. Die Web-Station-Regel in `~/dev/CLAUDE.md` zielt auf Secrets;
+  sollte das Dashboard je von außen erreichbar werden, ist das hier der erste Punkt, der nachzuziehen
+  ist (Daten nach `/volume1/homes/andreas/private-data/eta/`, `DATA_DIR`-Konstante in der PHP-Datei).
 
 ## Erledigt (v0.6)
 
