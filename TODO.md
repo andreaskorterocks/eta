@@ -36,9 +36,16 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
       Massenbilanz über eine volle Lagerfüllung zusätzlich den tatsächlichen **Heizwert** der
       gelieferten Pellets — die einzige noch offene Größe in der Rechnung.
 
-      **Offen:** Der Februar 2026 fällt mit 2,723 kg/Volllaststunde aus der Reihe (übrige Monate
-      2,19–2,37). Der Wirkungsgradunterschied Voll-/Teillast erklärt davon nur rund 2 %. Falls die
-      Leistungskonfiguration erst nach Februar auf 11 kW gesetzt wurde, wäre das die Erklärung.
+      **Geklärt:** Der Februar-Ausreißer (2,723 kg/Vh gegenüber 2,19–2,37 in den übrigen Monaten) ist
+      die dynamische Leistungsanpassung des Kessels. Aus den Zählern abgeleitet: Februar 12,16 kW,
+      März 10,60, April 10,11, Mai 10,15, September 10,13 — kalter Monat, höhere Leistung.
+
+      **Grenze der Methode (wichtig):** Die effektive Leistung wird aus demselben Verhältnis
+      abgeleitet, das geprüft werden soll — eine Gleichung mit zwei Unbekannten. Nimmt man die
+      Dynamik als gegeben, liegt der Periodenschnitt bei 10,76 kW und der Zähler stimmt auf 0,3 %.
+      Setzt man fest 12 kW an, fehlen 170 kg. Beides passt zu denselben Messwerten. Empfindlichkeit:
+      jedes halbe kW verschiebt das Ergebnis um rund 70 kg (11,0 kW → +33 kg, 11,5 → +102, 12,0 → +170,
+      12,5 → +239). Nur eine Masse von außen (Lieferschein, gewogener Sack) löst das auf.
 
 - [ ] **Solarstatistik auf Pumpenlaufzeit umstellen.** Seit 20.09.2026 werden `Kollektorpumpe` (%) und
       `Speicher 1 unten` mitgeloggt. Sobald ein paar Wochen Historie da sind, kann die Statistik von den
