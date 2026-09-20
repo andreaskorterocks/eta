@@ -352,47 +352,64 @@ function calc_consumption(string $counterUri): array {
 /**
  * Vorratsverlauf je Messpunkt: Gesamtvorrat, Lager und Behaelterinhalt.
  *
- * Gerechnet wird wie in calc_stock(), nur eben fuer jeden geloggten Zaehlerstand
- * statt nur fuer den aktuellen: Fuellmenge des letzten Bestands-Eintrags plus
- * seither nachgetragene Saecke minus das, was der Zaehler seitdem verbrannt hat.
- * Der Behaelterinhalt kommt aus dem Log (letzter Wert bis zum Zeitpunkt), das
- * Lager ist die Differenz.
+ * Ab dem ersten Bestands-Eintrag wird gerechnet wie in calc_stock(), nur eben
+ * fuer jeden geloggten Zaehlerstand statt nur fuer den aktuellen: Fuellmenge des
+ * letzten Eintrags plus seither nachgetragene Saecke minus das, was der Zaehler
+ * seitdem verbrannt hat.
+ *
+ * Fuer die Zeit davor gibt es keine Bilanz -- dort wird der Lagerwert gezeigt,
+ * den der Kessel selbst gefuehrt hat. Der ist ungenau (er kennt keine von Hand
+ * nachgefuellten Saecke und lief deshalb bis -14 kg ins Minus), aber es ist die
+ * einzige Angabe, die es fuer diesen Zeitraum gibt -- besser als ein leerer
+ * Graph. Rueckrechnen liesse sich der Zeitraum nicht: die Lieferungen von damals
+ * sind nicht protokolliert.
  */
 function stock_rows(int $sinceTs = 0): array {
     if (!file_exists(LOG_FILE)) return [];
     $events = read_events();
-    if (!$events) return [];
 
     $counterUri = $GLOBALS['CONFIG']['counter']['uri'];
     $hopperUri  = $GLOBALS['CONFIG']['hopper']['uri'];
+    $lagerUri   = $GLOBALS['CONFIG']['hero']['uri'];
 
     $lines   = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $counter = [];
     $hopper  = [];
+    $lager   = [];
     foreach ($lines as $line) {
         $parts = explode("\t", $line);
         if (count($parts) < 6) continue;
         $uri = trim($parts[5]);
-        if ($uri !== $counterUri && $uri !== $hopperUri) continue;
+        if ($uri !== $counterUri && $uri !== $hopperUri && $uri !== $lagerUri) continue;
         $ts = strtotime($parts[0]);
         if ($ts === false) continue;
         $val = floatval(str_replace(',', '.', $parts[2]));
-        if ($uri === $counterUri) $counter[$ts] = $val; else $hopper[$ts] = $val;
+        if ($uri === $counterUri)     $counter[$ts] = $val;
+        elseif ($uri === $hopperUri)  $hopper[$ts]  = $val;
+        else                          $lager[$ts]   = $val;
     }
     if (!$counter) return [];
     ksort($counter);
     ksort($hopper);
+    ksort($lager);
 
     $hopperTs  = array_keys($hopper);
     $hopperIdx = 0;
     $lastHop   = null;
+    $lagerTs   = array_keys($lager);
+    $lagerIdx  = 0;
+    $lastLager = null;
     $rows      = [];
 
     foreach ($counter as $ts => $counterVal) {
-        // Behaelterwert bis zu diesem Zeitpunkt nachziehen.
+        // Behaelter- und Lagerwert bis zu diesem Zeitpunkt nachziehen.
         while ($hopperIdx < count($hopperTs) && $hopperTs[$hopperIdx] <= $ts) {
             $lastHop = $hopper[$hopperTs[$hopperIdx]];
             $hopperIdx++;
+        }
+        while ($lagerIdx < count($lagerTs) && $lagerTs[$lagerIdx] <= $ts) {
+            $lastLager = $lager[$lagerTs[$lagerIdx]];
+            $lagerIdx++;
         }
         if ($ts < $sinceTs) continue;
 
@@ -400,7 +417,19 @@ function stock_rows(int $sinceTs = 0): array {
         foreach ($events as $e) {
             if ($e['type'] === 'bestand' && $e['ts'] <= $ts) $base = $e;
         }
-        if ($base === null) continue;
+
+        if ($base === null) {
+            // Vor dem ersten Eintrag: Wert des Kessels statt eigener Bilanz.
+            if ($lastLager === null) continue;
+            $rows[] = [
+                'ts'     => $ts,
+                'total'  => round($lastLager + ($lastHop ?? 0), 1),
+                'hopper' => $lastHop,
+                'lager'  => round($lastLager, 1),
+                'source' => 'kessel',
+            ];
+            continue;
+        }
 
         $sacks = 0.0;
         foreach ($events as $e) {
@@ -413,6 +442,7 @@ function stock_rows(int $sinceTs = 0): array {
             'total'  => round($total, 1),
             'hopper' => $lastHop,
             'lager'  => ($lastHop !== null) ? round($total - $lastHop, 1) : null,
+            'source' => 'bilanz',
         ];
     }
     return $rows;
@@ -452,20 +482,29 @@ function calc_stock_timeseries(int $hours = 168): array {
     return ['labels' => $labels, 'series' => $series, 'current' => $current];
 }
 
-/** Vorratsverlauf je Tag (letzter Wert des Tages) fuer Monat und Jahr. */
+/**
+ * Vorratsverlauf je Tag (letzter Wert des Tages) fuer Monat und Jahr.
+ *
+ * Die Achse laeuft durchgehend ueber den gesamten Zeitraum -- ein Jahr sind 365
+ * Tage, auch wenn erst ein Teil davon geloggt ist. Tage ohne Daten bleiben leer,
+ * statt den Zeitraum zusammenzuschieben.
+ */
 function calc_stock_daily(int $days = 365): array {
-    $rows = stock_rows(strtotime('today') - (($days - 1) * 86400));
-    if (!$rows) return ['labels' => [], 'series' => []];
+    $firstDay = strtotime('today') - (($days - 1) * 86400);
+    $rows     = stock_rows($firstDay);
 
     $byDay = [];
     foreach ($rows as $r) $byDay[date('Y-m-d', $r['ts'])] = $r;
-    ksort($byDay);
 
     $labels  = [];
     $columns = ['total' => [], 'lager' => [], 'hopper' => []];
-    foreach ($byDay as $day => $r) {
-        $labels[] = date('d.m.', strtotime($day));
-        foreach ($columns as $key => $_) $columns[$key][] = $r[$key];
+    for ($i = 0; $i < $days; $i++) {
+        $ts  = $firstDay + ($i * 86400);
+        $day = date('Y-m-d', $ts);
+        $labels[] = date('d.m.', $ts);
+        foreach ($columns as $key => $_) {
+            $columns[$key][] = isset($byDay[$day]) ? $byDay[$day][$key] : null;
+        }
     }
 
     $series = [];
@@ -490,7 +529,7 @@ function calc_solar_daily(array $solarConfig, int $days = 365): array {
 
     $uriMap = [];
     foreach ($solarConfig as $s) $uriMap[$s['uri']] = $s['name'];
-    $cutoff = strtotime('today') - (($days - 1) * 86400);
+    $firstDay = strtotime('today') - (($days - 1) * 86400);
 
     $lines  = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $byDay  = [];
@@ -500,13 +539,11 @@ function calc_solar_daily(array $solarConfig, int $days = 365): array {
         $uri = trim($parts[5]);
         if (!isset($uriMap[$uri])) continue;
         $ts = strtotime($parts[0]);
-        if ($ts === false || $ts < $cutoff) continue;
+        if ($ts === false || $ts < $firstDay) continue;
         $day   = date('Y-m-d', $ts);
         $value = floatval(str_replace(',', '.', $parts[2]));
         $byDay[$day][$uri] = max($byDay[$day][$uri] ?? -273.0, $value);
     }
-
-    ksort($byDay);
     if (empty($byDay)) return $empty;
 
     $colorMap = [
@@ -516,12 +553,21 @@ function calc_solar_daily(array $solarConfig, int $days = 365): array {
         '/120/10251/0/0/12244' => '#4488cc',
     ];
 
-    $labels = array_map(function($d) { return date('d.m.', strtotime($d)); }, array_keys($byDay));
+    // Durchgehende Tagesachse: ein Jahr sind 365 Tage, auch wenn erst ein Teil
+    // davon geloggt ist. Tage ohne Messwert bleiben leer.
+    $days_list = [];
+    $labels    = [];
+    for ($i = 0; $i < $days; $i++) {
+        $ts = $firstDay + ($i * 86400);
+        $days_list[] = date('Y-m-d', $ts);
+        $labels[]    = date('d.m.', $ts);
+    }
+
     $series = [];
     foreach (array_keys($uriMap) as $uri) {
         $data = [];
-        foreach ($byDay as $dayValues) {
-            $data[] = isset($dayValues[$uri]) ? round($dayValues[$uri], 1) : null;
+        foreach ($days_list as $day) {
+            $data[] = isset($byDay[$day][$uri]) ? round($byDay[$day][$uri], 1) : null;
         }
         $series[] = [
             'uri'   => $uri,
@@ -934,10 +980,14 @@ $consumption     = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[]];
 $stockSeries     = ['labels' => [], 'series' => [], 'current' => []];
 $stockDailySerie = ['labels' => [], 'series' => []];
 $counterNowVerbr = null;
+$stockFirstBase  = null;
 if ($action === 'verbrauch') {
     $consumption     = calc_consumption($CONFIG['counter']['uri']);
     $stockSeries     = calc_stock_timeseries(168);
     $stockDailySerie = calc_stock_daily(365);
+    foreach (read_events() as $e) {
+        if ($e['type'] === 'bestand') { $stockFirstBase = $e['ts']; break; }
+    }
     $counterNowVerbr = current_value($CONFIG['counter']['uri']);
 }
 
@@ -1279,6 +1329,19 @@ if ($action === 'menu') {
                     <canvas id="stock-chart"></canvas>
                 </div>
 
+                <details class="explain">
+                    <summary>Woher kommen die Werte?</summary>
+                    <p class="hint">
+                        Ab dem ersten Bestands-Eintrag<?php if($stockFirstBase):?>
+                        (<?=date('d.m.Y', $stockFirstBase)?>)<?php endif?> ist es die eigene Bilanz:
+                        Füllmenge + nachgetragene Säcke − verbrannte kg laut Zähler. Für die Zeit davor
+                        zeigt der Graph den Lagerwert, den der Kessel selbst geführt hat — der kennt
+                        keine von Hand nachgefüllten Säcke und läuft deshalb zu tief, teils ins Minus.
+                        Zurückrechnen lässt sich der Zeitraum nicht, die damaligen Lieferungen sind
+                        nirgends protokolliert.
+                    </p>
+                </details>
+
                 <script>
                 const stockLabels    = <?=json_encode($stockSeries['labels'])?>;
                 const stockSeries    = <?=json_encode($stockSeries['series'])?>;
@@ -1305,7 +1368,7 @@ if ($action === 'menu') {
                     const note = document.getElementById('stock-chart-note');
                     if (note) {
                         note.textContent = daily
-                            ? 'Tageswerte (Stand am Tagesende) — ' + labels.length + ' Tage'
+                            ? 'Tageswerte (Stand am Tagesende) — letzte ' + days + ' Tage'
                             : '';
                     }
 
@@ -1315,11 +1378,11 @@ if ($action === 'menu') {
                         borderColor:     s.color,
                         backgroundColor: s.color + '18',
                         borderWidth:     2,
-                        pointRadius:     (!daily && range <= 48) ? 3 : (daily && labels.length <= 40 ? 2 : 0),
+                        pointRadius:     (!daily && range <= 48) ? 3 : (daily && days <= 30 ? 2 : 0),
                         pointHoverRadius:5,
                         fill:            false,
                         tension:         0.35,
-                        spanGaps:        true
+                        spanGaps:        !daily
                     }));
 
                     if (stockChart) stockChart.destroy();
@@ -1557,7 +1620,7 @@ if ($action === 'menu') {
                     const note = document.getElementById('solar-chart-note');
                     if (note) {
                         note.textContent = daily
-                            ? 'Tageshöchstwerte je Variable — ' + labels.length + ' Tage'
+                            ? 'Tageshöchstwerte je Variable — letzte ' + days + ' Tage'
                             : '';
                     }
 
@@ -1567,11 +1630,11 @@ if ($action === 'menu') {
                         borderColor:     s.color,
                         backgroundColor: s.color + '18',
                         borderWidth:     2,
-                        pointRadius:     (!daily && range <= 48) ? 3 : (daily && labels.length <= 40 ? 2 : 0),
+                        pointRadius:     (!daily && range <= 48) ? 3 : (daily && days <= 30 ? 2 : 0),
                         pointHoverRadius:5,
                         fill:            false,
                         tension:         0.35,
-                        spanGaps:        true
+                        spanGaps:        !daily
                     }));
 
                     if (solarChart) solarChart.destroy();

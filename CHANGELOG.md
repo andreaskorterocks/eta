@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.81 — Durchgehende Zeitachse (2026-09-20)
+
+### Behoben
+- **„Jahr" zeigte nicht ein Jahr.** Die Tagesachse enthielt nur Tage mit Daten — beim Pelletvorrat
+  waren das 59 (erst ab dem Bestands-Eintrag vom 24.07.), bei Solar 223. Der Jahresbereich sah damit
+  aus wie der Monatsbereich. Die Achse läuft jetzt auf beiden Seiten durchgehend über den vollen
+  Zeitraum: Jahr = 365 Tage, Monat = 30 Tage. Tage ohne Messwerte bleiben leer, statt den Zeitraum
+  zusammenzuschieben.
+- **Vorratsverlauf vor dem ersten Bestands-Eintrag.** Für diese Zeit gibt es keine Bilanz; der Graph
+  zeigt dort jetzt den Lagerwert, den der Kessel selbst geführt hat (inklusive der Phase, in der er
+  ins Minus lief). Zurückrechnen lässt sich der Zeitraum nicht — die damaligen Lieferungen sind
+  nirgends protokolliert. Die Quelle ist in der Karte unter „Woher kommen die Werte?" erklärt.
+
+---
+
 ## v0.8 — Verbrauchsseite im Solar-Layout (2026-09-20)
 
 ### Geändert
