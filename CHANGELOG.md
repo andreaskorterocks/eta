@@ -5,8 +5,11 @@
 ### Neu
 - Die Statusvariable `Pelletsbehälter` (`/40/10021/0/0/12005`, „Voll" / „Nicht voll") wird stündlich
   mitgeloggt (`hopper_status`). Hintergrund: `Inhalt Pelletsbehälter` ist ein gerechneter Nennwert —
-  er steht nach dem Saugen auf 30 kg, während der Status zeitgleich „Nicht voll" melden kann. Das Log
-  zeigt nach ein paar Tagen, ob der Nennwert zu optimistisch ist.
+  er steht nach dem Saugen auf 30 kg, während der Status zeitgleich „Nicht voll" melden kann.
+- **Nachtrag vom selben Tag:** ein manueller Saugvorgang mit 15-Sekunden-Protokoll hat die Frage
+  beantwortet — der Status durchläuft „Nicht voll" → „Saugen" → „Saugturbine Nachlauf" → „Voll",
+  Inhalt und Lager blieben dabei unverändert. Der gerechnete Nennwert von 30 kg stimmt also, die
+  Bilanz braucht keine Korrektur. Die Variable bleibt im Log, weil sie den Saugzyklus sichtbar macht.
 
 ---
 

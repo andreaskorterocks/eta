@@ -30,16 +30,15 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
       der echte Betrieb statt nur „Sonne war da". Auflösung bleibt durch das stündliche Logging bei ±1 h
       pro Tag; feiner ginge nur mit häufigerem Cronjob.
 
-- [ ] **Behälter-Status auswerten — erst wenn die Heizung wieder läuft.** `Pelletsbehälter Status`
-      (Zustandscode, 2040 = „Nicht voll") wird seit 20.09.2026 stündlich geloggt. Solange der Kessel
-      auf „Bereit" steht und der Puffer solar durchgeladen ist, wird nichts entnommen und nichts
-      nachgesaugt — der Wert bleibt konstant, eine Auswertung wäre sinnlos. Sobald wieder gebrannt und
-      um 19:00 gesaugt wird: springt er danach auf „Voll", passt der gerechnete Nennwert von 30 kg.
-      Bleibt er auf „Nicht voll", ist der echte Inhalt kleiner — dann ist der Startbestand der Bilanz
-      um ein paar kg zu hoch (einmaliger Versatz, kein auflaufender Fehler) und beim Kalibrieren zu
-      berücksichtigen.
-
 ## Bewusst entschieden
+
+- **Der gerechnete Behälterinhalt von 30 kg stimmt** — geprüft am 20.09.2026 mit einem manuellen
+  Saugvorgang und 15-Sekunden-Protokoll. Ablauf: „Nicht voll" → *Saugen* (Turbine ein, 20:16:35) →
+  *Saugturbine Nachlauf* → **„Voll"** (20:17:06, Code 2045). Inhalt blieb bei 30 kg, Lager bei
+  3.593 kg, Zähler unverändert — es wurde also weniger als 1 kg nachgefördert, der Behälter war
+  tatsächlich voll. Das vorherige „Nicht voll" (Code 2040) war der Zustand seit dem letzten
+  Saugzyklus, kein Hinweis auf einen zu hoch gebuchten Inhalt. Der Startbestand der Bilanz
+  (3.600 + 30 kg) braucht keine Korrektur.
 
 - **Datendateien bleiben im Web-Dokumentenstamm** (`/volume1/web/eta/`): `pellet_verbrauch.txt`,
   `pellet_events.txt` und `config.json` sind damit per HTTP abrufbar. Entscheidung vom 20.09.2026:
