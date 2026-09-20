@@ -4,12 +4,6 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
 
 ## Offen
 
-- [ ] **Deploy auf das NAS.** Die Version unter `/volume1/web/eta/` ist der Stand vom 27.05. 08:40 und
-      damit hinter dem Repo: v0.41 (IP/Port aus `config.json`), v0.5 (Solar-Tab) und v0.6 (Zähler-Verbrauch,
-      Vorratsbilanz) sind dort noch nicht drauf. Ein Deploy zieht alle drei mit.
-- [ ] **Basis-Eintrag anlegen**, sobald v0.6 live ist: `pellet_events.txt` mit der Befüllung vom
-      24.07.2026 (3600 kg, Zählerstand 63865, Behälter 30 kg). Ohne diesen Eintrag zeigt die Hero-Karte
-      „Noch kein Bestand eingetragen".
 - [ ] **Kalibrierfaktor für den Zähler — beim nächsten Tanken.** Die Entnahme des Kessels weicht
       geschätzt um rund 100 kg pro Heizperiode ab (Kalibrierung der Förderschnecke). Der Vergleichswert
       fällt beim nächsten Befüllen an, wenn das Lager wieder leergefahren ist:
@@ -33,3 +27,7 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
 - [x] Vorratsbilanz aus Füllmenge + Säcke − verbrannte kg, aufgeteilt in Lager und Behälter
 - [x] Nachtragen von Säcken und Lieferungen über das Dashboard, Einträge einzeln löschbar
 - [x] Zähler und Behälter werden immer geloggt, auch ohne eigene Kachel (PHP und Cronjob)
+- [x] Deploy auf das NAS am 20.09.2026 — zog v0.41 (IP/Port aus `config.json`) und v0.5 (Solar-Tab) mit,
+      die dort noch fehlten. Backup der alten Dateien: `/volume1/homes/andreas/eta-backup/20260920-175204/`
+- [x] Basis-Eintrag in `pellet_events.txt` angelegt: Befüllung 24.07.2026, 3600 kg, Zählerstand 63865,
+      Behälter 30 kg (aus den Logdaten rekonstruiert)
