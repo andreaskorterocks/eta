@@ -24,6 +24,12 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
       4. Faktor = tatsächlich verbraucht / laut Zähler. Erst dann als Korrektur einbauen — vorher
          nicht raten.
 
+- [ ] **Solarstatistik auf Pumpenlaufzeit umstellen.** Seit 20.09.2026 werden `Kollektorpumpe` (%) und
+      `Speicher 1 unten` mitgeloggt. Sobald ein paar Wochen Historie da sind, kann die Statistik von den
+      Sonnenstunden (Kollektor über Schwelle) auf die tatsächliche Förderzeit umgestellt werden — das ist
+      der echte Betrieb statt nur „Sonne war da". Auflösung bleibt durch das stündliche Logging bei ±1 h
+      pro Tag; feiner ginge nur mit häufigerem Cronjob.
+
 ## Bewusst entschieden
 
 - **Datendateien bleiben im Web-Dokumentenstamm** (`/volume1/web/eta/`): `pellet_verbrauch.txt`,

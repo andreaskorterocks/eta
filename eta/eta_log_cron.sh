@@ -68,6 +68,20 @@ if [ -f "$CONFIG_FILE" ]; then
     HOPPER_NAME="${HOPPER_NAME:-Inhalt Pelletsbehälter}"
     already_logged "$HOPPER_URI" || fetch_and_log "$HOPPER_URI" "$HOPPER_NAME"
 
+    # Solarstatistik: Pumpe und Speicherfuehler mitloggen (Basis fuer die spaetere
+    # Umstellung der Statistik auf echte Pumpenlaufzeit).
+    PUMP_URI=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('solar_stats',{}).get('pump',{}).get('uri',''))" 2>/dev/null)
+    PUMP_NAME=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('solar_stats',{}).get('pump',{}).get('name',''))" 2>/dev/null)
+    PUMP_URI="${PUMP_URI:-/120/10221/0/0/12278}"
+    PUMP_NAME="${PUMP_NAME:-Kollektorpumpe}"
+    already_logged "$PUMP_URI" || fetch_and_log "$PUMP_URI" "$PUMP_NAME"
+
+    STORE_URI=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('solar_stats',{}).get('store',{}).get('uri',''))" 2>/dev/null)
+    STORE_NAME=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('solar_stats',{}).get('store',{}).get('name',''))" 2>/dev/null)
+    STORE_URI="${STORE_URI:-/120/10221/0/0/12781}"
+    STORE_NAME="${STORE_NAME:-Speicher 1 unten}"
+    already_logged "$STORE_URI" || fetch_and_log "$STORE_URI" "$STORE_NAME"
+
     # Tiles
     TILE_COUNT=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(len(c['tiles']))" 2>/dev/null)
     if [ -n "$TILE_COUNT" ]; then
@@ -105,6 +119,8 @@ else
         "/120/10221/0/0/12197|Außentemperatur"
         "/120/10251/0/0/12242|Puffer oben"
         "/120/10251/0/0/12244|Puffer unten"
+        "/120/10221/0/0/12278|Kollektorpumpe"
+        "/120/10221/0/0/12781|Speicher 1 unten"
     )
     for entry in "${VARS[@]}"; do
         URI="${entry%%|*}"

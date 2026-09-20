@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.7 — Solarstatistik (2026-09-20)
+
+### Neu
+- **Solarstatistik** im Solar-Tab, gleiche Darstellung wie der Pelletverbrauch: Summenzeile
+  (heute / Woche / Monat / Jahr) und Balken für täglich, wöchentlich, monatlich, jährlich, dazu die
+  Spitzentemperatur je Tag als Linie.
+- Kennzahl sind **Sonnenstunden**: Zeit, in der der Kollektor über der Starttemperatur lag
+  (Standard 40 °C, konfigurierbar als `solar_stats.threshold`). Rückwirkend über den gesamten Log
+  verfügbar — Juni 280 h, Juli 329 h, August 281 h.
+- **Kollektorpumpe** (in %) und **Speicher 1 unten** werden ab sofort mitgeloggt, damit die Statistik
+  später auf die tatsächliche Pumpenlaufzeit umgestellt werden kann.
+- Neuer Konfigurationsabschnitt `solar_stats`.
+
+### Geändert
+- Die Karte **Vorrat nachtragen** sitzt jetzt unter den Detail-Kacheln am Seitenende statt direkt unter
+  der Hero-Anzeige — auf dem Handy standen Vorrat und Kacheln sonst zu weit auseinander.
+- Der Erklärtext dazu ist eingeklappt („Was ist das?") und stört die Ansicht nicht mehr.
+
+### Hinweis
+- Ein Solarertrag in kWh ist nicht möglich: der Kessel hat keinen Ertragszähler (im Menübaum geprüft).
+
+---
+
 ## v0.6 — Verbrauch aus dem Zähler, eigene Vorratsbilanz (2026-09-20)
 
 ### Behoben

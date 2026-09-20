@@ -13,6 +13,7 @@ Web-Dashboard zur Überwachung und Protokollierung von Pelletverbrauch und Solar
 - **Bestandsverlauf** als Linienchart — zeigt wie der Pelletvorrat über die Tage fällt
 - **Verbrauchsstatistik** aus dem Zähler der tatsächlich verbrannten kg (täglich / wöchentlich / monatlich / jährlich)
 - **Solar-Tab** mit Linien-Chart für Kollektor, Puffer oben/unten und Außentemperatur (24h / 48h / 7 Tage)
+- **Solarstatistik** mit Sonnenstunden je Tag / Woche / Monat / Jahr und Spitzentemperatur je Tag
 - **Menubaum-Browser** zum Durchsuchen aller Kessel-Variablen
 - **Konfigurierbares Dashboard** — Kacheln und Hero-Variable über Web-UI anpassen, Solar-Variablen editierbar
 - **Kessel IP/Port konfigurierbar** über die Einstellungen (kein Editieren der PHP-Datei nötig)
@@ -63,6 +64,7 @@ Die Konfiguration wird in `config.json` gespeichert und ist vollständig über d
 | `counter` | Zähler der verbrannten kg — Basis für Verbrauch und Bilanz (Standard `/40/10021/0/0/12016`) |
 | `hopper` | Vorratsbehälter im Kessel (Standard `/40/10021/0/0/12011`) |
 | `sack_kg` | Gebindegröße für den Sack-Button auf dem Dashboard (Standard 15) |
+| `solar_stats` | Kollektor-Variable, Schwelle für Sonnenstunden (Standard 40 °C) sowie Pumpe und Speicherfühler fürs Logging |
 | `tiles` | Dashboard-Kacheln mit Name und URI-Pfad |
 | `solar` | Solar-Variablen für den Solar-Tab (Kurven-Logging) |
 
@@ -101,6 +103,25 @@ der Verlauf später zurückrechnen. Fehleingaben lassen sich in der Liste darunt
 sie ab (geschätzt rund 100 kg pro Heizperiode), weicht auch die Bilanz ab. Sichtbar wird das, wenn das
 Lager leergefahren ist — also beim ersten Sack, den die Schnecke nicht mehr ersetzen kann: was die Bilanz
 dann noch anzeigt, ist der aufgelaufene Fehler (abzüglich der Restmenge, die die Schnecke nie erreicht).
+
+### Solarstatistik — Sonnenstunden statt kWh
+
+Der Kessel hat **keinen Ertragszähler**: der Solar-Funktionsblock (`/120/10221`) kennt nur Zustand,
+Kollektor, Kollektor Min, Außentemperatur, Startfunktion, Kollektorpumpe und Speicher 1 unten. Ein
+Ertrag in kWh lässt sich daraus nicht ableiten.
+
+Gezählt wird deshalb die **Zeit oberhalb der Kollektor-Starttemperatur** (Standard 40 °C, im Kessel
+als „Kollektor Min" hinterlegt) — die Zeit, in der die Anlage liefern konnte. Jeder Messpunkt zählt
+mit dem Abstand zum nächsten, gedeckelt auf zwei Stunden, damit ein ausgefallener Cronjob keine
+Stunden erfindet.
+
+**Was die Zahl nicht ist:** kein Ertrag. Steht der Puffer voll, schaltet die Pumpe ab — die Stunde
+zählt trotzdem. Als Vergleich zwischen Tagen, Wochen und Monaten ist sie trotzdem aussagekräftig, weil
+die Bedingung immer dieselbe ist.
+
+Seit v0.7 werden zusätzlich **Kollektorpumpe** (in %) und **Speicher 1 unten** geloggt. Sobald davon
+genug Historie vorliegt, kann die Statistik auf die tatsächliche Pumpenlaufzeit umgestellt werden —
+das ist dann der echte Förderbetrieb statt nur „Sonne war da".
 
 ### Solar-Variablen (Standardkonfiguration)
 

@@ -43,5 +43,17 @@
             "uri": "/120/10221/0/0/12197",
             "name": "Aussentemperatur (Solar)"
         }
-    ]
+    ],
+    "solar_stats": {
+        "collector_uri": "/120/10221/0/0/12275",
+        "threshold": 40,
+        "pump": {
+            "uri": "/120/10221/0/0/12278",
+            "name": "Kollektorpumpe"
+        },
+        "store": {
+            "uri": "/120/10221/0/0/12781",
+            "name": "Speicher 1 unten"
+        }
+    }
 }

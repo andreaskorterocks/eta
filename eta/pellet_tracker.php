@@ -42,6 +42,15 @@ define('DEFAULT_CONFIG', json_encode([
         ['uri' => '/120/10251/0/0/12242', 'name' => 'Puffer oben'],
         ['uri' => '/120/10251/0/0/12244', 'name' => 'Puffer unten'],
     ],
+    // Solarstatistik. Der Kessel hat keinen Ertragszaehler, gezaehlt wird die Zeit
+    // oberhalb der Kollektor-Starttemperatur. Pumpe und Speicherfuehler werden
+    // mitgeloggt, damit spaeter auf echte Pumpenlaufzeit umgestellt werden kann.
+    'solar_stats' => [
+        'collector_uri' => '/120/10221/0/0/12275',
+        'threshold'     => 40,
+        'pump'          => ['uri' => '/120/10221/0/0/12278', 'name' => 'Kollektorpumpe'],
+        'store'         => ['uri' => '/120/10221/0/0/12781', 'name' => 'Speicher 1 unten'],
+    ],
 ]));
 
 function load_config(): array {
@@ -56,6 +65,7 @@ function load_config(): array {
             if (!isset($config['counter']))  $config['counter']  = $defaults['counter'];
             if (!isset($config['hopper']))   $config['hopper']   = $defaults['hopper'];
             if (!isset($config['sack_kg']))  $config['sack_kg']  = $defaults['sack_kg'];
+            $config['solar_stats'] = array_merge($defaults['solar_stats'], $config['solar_stats'] ?? []);
             return $config;
         }
     }
@@ -371,6 +381,74 @@ function calc_stock_series(array $counterDaily): array {
 }
 
 /**
+ * Solarstatistik: Sonnenstunden je Tag/Woche/Monat/Jahr.
+ *
+ * Der Kessel hat keinen Ertragszaehler -- der Solar-Funktionsblock kennt nur
+ * Temperaturen, Zustand und Pumpenleistung (im Menuebaum geprueft). Gezaehlt wird
+ * deshalb die Zeit, in der der Kollektor ueber seiner Starttemperatur lag: die
+ * Zeit, in der die Anlage liefern konnte. Das ist nicht der Ertrag -- bei vollem
+ * Puffer steht die Pumpe, die Stunde zaehlt trotzdem.
+ *
+ * Jeder Messpunkt zaehlt mit dem Abstand zum naechsten, gedeckelt auf zwei
+ * Stunden, damit Luecken im Log (ausgefallener Cronjob) keine Stunden erfinden.
+ */
+function calc_solar_stats(string $collectorUri, float $threshold): array {
+    $empty = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'peakDaily'=>[]];
+    if (!file_exists(LOG_FILE)) return $empty;
+
+    $lines    = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $readings = [];
+    foreach ($lines as $line) {
+        $parts = explode("\t", $line);
+        if (count($parts) < 6) continue;
+        if (trim($parts[5] ?? '') !== $collectorUri) continue;
+        $ts = strtotime($parts[0]);
+        if ($ts === false) continue;
+        $readings[] = ['ts' => $ts, 'value' => floatval(str_replace(',', '.', $parts[2]))];
+    }
+    if (!$readings) return $empty;
+    usort($readings, function($a, $b) { return $a['ts'] <=> $b['ts']; });
+
+    $daily = $weekly = $monthly = $yearly = $peakDaily = [];
+    $maxGap = 7200; // zwei Stunden
+
+    foreach ($readings as $i => $r) {
+        $day = date('Y-m-d', $r['ts']);
+        $peakDaily[$day] = max($peakDaily[$day] ?? -273.0, $r['value']);
+
+        if ($r['value'] < $threshold) continue;
+        $next = $readings[$i + 1]['ts'] ?? null;
+        if ($next === null) continue;
+        $hours = min($next - $r['ts'], $maxGap) / 3600;
+        if ($hours <= 0) continue;
+
+        $week  = date('o-\KW', $r['ts']);
+        $month = date('Y-m', $r['ts']);
+        $year  = date('Y', $r['ts']);
+
+        $daily[$day]     = ($daily[$day] ?? 0) + $hours;
+        $weekly[$week]   = ($weekly[$week] ?? 0) + $hours;
+        $monthly[$month] = ($monthly[$month] ?? 0) + $hours;
+        $yearly[$year]   = ($yearly[$year] ?? 0) + $hours;
+    }
+
+    foreach ($daily     as &$v) $v = round($v, 1);
+    foreach ($weekly    as &$v) $v = round($v, 1);
+    foreach ($monthly   as &$v) $v = round($v, 1);
+    foreach ($yearly    as &$v) $v = round($v, 1);
+    foreach ($peakDaily as &$v) $v = round($v, 1);
+    unset($v);
+
+    $daily     = array_slice($daily,     -30, null, true);
+    $weekly    = array_slice($weekly,    -12, null, true);
+    $monthly   = array_slice($monthly,   -12, null, true);
+    $yearly    = array_slice($yearly,     -5, null, true);
+    $peakDaily = array_slice($peakDaily, -30, null, true);
+
+    return compact('daily', 'weekly', 'monthly', 'yearly', 'peakDaily');
+}
+
+/**
  * Baut Zeitreihen-Daten für den Solar-Tab.
  * Gibt alle Messpunkte der letzten $hours Stunden zurück,
  * aufgeteilt in Labels (Zeitstempel) und je eine Datenserie pro Variable.
@@ -615,7 +693,8 @@ if ($action === 'fetchall') {
     }
     // Zaehler und Behaelter sind die Basis der Bilanz -- immer mitloggen, auch
     // wenn sie nicht als Kachel konfiguriert sind.
-    foreach ([$CONFIG['counter'], $CONFIG['hopper']] as $must) {
+    foreach ([$CONFIG['counter'], $CONFIG['hopper'],
+              $CONFIG['solar_stats']['pump'], $CONFIG['solar_stats']['store']] as $must) {
         if (in_array($must['uri'], $loggedUris)) continue;
         $data = read_variable($must['uri']);
         if ($data) {
@@ -704,8 +783,13 @@ if ($action === 'verbrauch') {
 }
 
 $solarTimeseries = ['labels' => [], 'series' => [], 'current' => []];
+$solarStats      = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'peakDaily'=>[]];
 if ($action === 'solar') {
     $solarTimeseries = calc_solar_timeseries($CONFIG['solar'] ?? []);
+    $solarStats      = calc_solar_stats(
+        $CONFIG['solar_stats']['collector_uri'],
+        (float)$CONFIG['solar_stats']['threshold']
+    );
 }
 
 $menuXml = null;
@@ -751,6 +835,17 @@ if ($action === 'menu') {
         .event-table th{text-align:left;color:#888;font-weight:normal;padding:4px 6px;border-bottom:1px solid #0f3460}
         .event-table td{padding:6px;border-bottom:1px solid #0f3460;color:#ddd}
         .event-table .ev-del{color:#e94560;text-decoration:none}
+        details.explain{margin-top:12px}
+        details.explain summary{color:#95d5b2;font-size:.85em;cursor:pointer;-webkit-tap-highlight-color:transparent}
+        details.explain .hint{margin:8px 0 0}
+        .sstat-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+        .sstat-tabs button{padding:8px 14px;background:#0f3460;color:#eee;border:none;border-radius:6px;cursor:pointer;font-size:.85em;-webkit-tap-highlight-color:transparent}
+        .sstat-tabs button.active,.sstat-tabs button:hover,.sstat-tabs button:active{background:#e94560}
+        .sstat-wrap{position:relative;height:250px}
+        .sstat-wrap canvas{display:none}
+        .sstat-wrap canvas.active{display:block}
+        @media(min-width:600px){.sstat-wrap{height:300px}}
+        @media(min-width:900px){.sstat-wrap{height:350px}}
         .var-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
         .var-card{background:#0f3460;border-radius:8px;padding:10px;position:relative}
         .var-card .var-name{color:#95d5b2;font-size:.75em;margin-bottom:3px;padding-right:20px}
@@ -906,12 +1001,34 @@ if ($action === 'menu') {
         </div>
 
         <div class="card">
+            <h2>Details</h2>
+            <?php if(!empty($dashboardData)):?>
+                <div class="var-grid">
+                <?php foreach($dashboardData as $idx => $item):?>
+                    <div class="var-card">
+                        <a href="?action=deltile&idx=<?=$idx?>" class="btn-del" title="Kachel entfernen" onclick="return confirm('Kachel entfernen?')">&times;</a>
+                        <div class="var-name"><?=htmlspecialchars($item['name'])?></div>
+                        <?php if($item['data']):?>
+                            <div class="var-value">
+                                <?=htmlspecialchars($item['data']['strValue'])?>
+                                <span class="var-unit"><?=htmlspecialchars($item['data']['unit'])?></span>
+                            </div>
+                        <?php else:?>
+                            <div class="var-value err">--</div>
+                        <?php endif?>
+                        <div class="var-uri"><?=htmlspecialchars($item['uri'])?></div>
+                    </div>
+                <?php endforeach?>
+                </div>
+                <br>
+                <a href="?action=fetchall" class="btn">Alle abrufen &amp; loggen</a>
+            <?php else:?>
+                <p style="color:#888">Keine Kacheln konfiguriert. <a href="?action=menu" style="color:#e94560">Im Menubaum hinzufuegen</a> oder <a href="?action=reset" style="color:#e94560">Standard wiederherstellen</a>.</p>
+            <?php endif?>
+        </div>
+
+        <div class="card">
             <h2>Vorrat nachtragen</h2>
-            <p class="hint">
-                Der Kessel misst das Lager nicht, er rechnet nur: eingetragene Füllmenge minus verbrannte kg.
-                Säcke, die bei einem Klemmer direkt in den Behälter gekippt werden, kennt er nicht — hier
-                eingetragen, stimmt die Bilanz oben weiter.
-            </p>
             <div class="stock-forms">
                 <form method="post" action="?action=addevent" class="stock-form">
                     <input type="hidden" name="type" value="sack">
@@ -940,33 +1057,14 @@ if ($action === 'menu') {
                     <?php endforeach?>
                 </table></div>
             <?php endif?>
-        </div>
-
-        <div class="card">
-            <h2>Details</h2>
-            <?php if(!empty($dashboardData)):?>
-                <div class="var-grid">
-                <?php foreach($dashboardData as $idx => $item):?>
-                    <div class="var-card">
-                        <a href="?action=deltile&idx=<?=$idx?>" class="btn-del" title="Kachel entfernen" onclick="return confirm('Kachel entfernen?')">&times;</a>
-                        <div class="var-name"><?=htmlspecialchars($item['name'])?></div>
-                        <?php if($item['data']):?>
-                            <div class="var-value">
-                                <?=htmlspecialchars($item['data']['strValue'])?>
-                                <span class="var-unit"><?=htmlspecialchars($item['data']['unit'])?></span>
-                            </div>
-                        <?php else:?>
-                            <div class="var-value err">--</div>
-                        <?php endif?>
-                        <div class="var-uri"><?=htmlspecialchars($item['uri'])?></div>
-                    </div>
-                <?php endforeach?>
-                </div>
-                <br>
-                <a href="?action=fetchall" class="btn">Alle abrufen &amp; loggen</a>
-            <?php else:?>
-                <p style="color:#888">Keine Kacheln konfiguriert. <a href="?action=menu" style="color:#e94560">Im Menubaum hinzufuegen</a> oder <a href="?action=reset" style="color:#e94560">Standard wiederherstellen</a>.</p>
-            <?php endif?>
+            <details class="explain">
+                <summary>Was ist das?</summary>
+                <p class="hint">
+                    Der Kessel misst das Lager nicht, er rechnet nur: eingetragene Füllmenge minus
+                    verbrannte kg. Säcke, die bei einem Klemmer direkt in den Behälter gekippt werden,
+                    kennt er nicht — hier eingetragen, stimmt die Bilanz oben weiter.
+                </p>
+            </details>
         </div>
 
     <?php elseif($action==='verbrauch'):?>
@@ -1206,6 +1304,130 @@ if ($action === 'menu') {
                 <div class="no-data">
                     Noch keine Solardaten im Log vorhanden.<br>
                     <small>Sobald der stündliche Cronjob gelaufen ist, erscheinen hier die Temperaturkurven.</small>
+                </div>
+            <?php endif?>
+        </div>
+
+
+        <div class="card">
+            <h2>Solarstatistik</h2>
+            <?php
+                $sstatHas = !empty($solarStats['daily']) || !empty($solarStats['peakDaily']);
+            ?>
+            <?php if($sstatHas):?>
+                <?php
+                    $sToday = $solarStats['daily'][date('Y-m-d')]   ?? 0;
+                    $sWeek  = $solarStats['weekly'][date('o-\KW')]  ?? 0;
+                    $sMonth = $solarStats['monthly'][date('Y-m')]   ?? 0;
+                    $sYear  = $solarStats['yearly'][date('Y')]      ?? 0;
+                    $sh = fn($v) => number_format((float)$v, 1, ',', '.');
+                ?>
+                <div class="consumption-summary">
+                    <div class="cons-item">
+                        <div class="cons-label">Heute</div>
+                        <div class="cons-val"><?=$sh($sToday)?> <span class="cons-unit">h</span></div>
+                    </div>
+                    <div class="cons-item">
+                        <div class="cons-label">Diese Woche</div>
+                        <div class="cons-val"><?=$sh($sWeek)?> <span class="cons-unit">h</span></div>
+                    </div>
+                    <div class="cons-item">
+                        <div class="cons-label">Dieser Monat</div>
+                        <div class="cons-val"><?=$sh($sMonth)?> <span class="cons-unit">h</span></div>
+                    </div>
+                    <div class="cons-item">
+                        <div class="cons-label">Dieses Jahr</div>
+                        <div class="cons-val"><?=$sh($sYear)?> <span class="cons-unit">h</span></div>
+                    </div>
+                </div>
+
+                <div class="sstat-tabs">
+                    <button class="active" onclick="showSolarStat('daily',this)">Taeglich</button>
+                    <button onclick="showSolarStat('weekly',this)">Woechentlich</button>
+                    <button onclick="showSolarStat('monthly',this)">Monatlich</button>
+                    <button onclick="showSolarStat('yearly',this)">Jaehrlich</button>
+                    <button onclick="showSolarStat('peak',this)">Spitzentemperatur</button>
+                </div>
+                <div class="sstat-wrap">
+                    <canvas id="sstat-daily" class="active"></canvas>
+                    <canvas id="sstat-weekly"></canvas>
+                    <canvas id="sstat-monthly"></canvas>
+                    <canvas id="sstat-yearly"></canvas>
+                    <canvas id="sstat-peak"></canvas>
+                </div>
+
+                <details class="explain">
+                    <summary>Was wird hier gezaehlt?</summary>
+                    <p class="hint">
+                        Sonnenstunden = Zeit, in der der Kollektor über der Starttemperatur von
+                        <?=htmlspecialchars((string)$CONFIG['solar_stats']['threshold'])?>&nbsp;°C lag, also
+                        liefern konnte. Ein Ertrag in kWh lässt sich daraus nicht ableiten — der Kessel hat
+                        keinen Ertragszähler. Bei vollem Puffer steht die Pumpe, die Stunde zählt trotzdem.
+                        Seit dem <?=date('d.m.Y')?> werden zusätzlich Kollektorpumpe und Speicherfühler
+                        geloggt; sobald davon genug Historie da ist, kann die Statistik auf die tatsächliche
+                        Pumpenlaufzeit umgestellt werden.
+                    </p>
+                </details>
+
+                <script>
+                const sstatData = {
+                    daily:   {labels:<?=json_encode(array_keys($solarStats['daily']))?>,     data:<?=json_encode(array_values($solarStats['daily']))?>,     unit:' h'},
+                    weekly:  {labels:<?=json_encode(array_keys($solarStats['weekly']))?>,    data:<?=json_encode(array_values($solarStats['weekly']))?>,    unit:' h'},
+                    monthly: {labels:<?=json_encode(array_keys($solarStats['monthly']))?>,   data:<?=json_encode(array_values($solarStats['monthly']))?>,   unit:' h'},
+                    yearly:  {labels:<?=json_encode(array_keys($solarStats['yearly']))?>,    data:<?=json_encode(array_values($solarStats['yearly']))?>,    unit:' h'},
+                    peak:    {labels:<?=json_encode(array_keys($solarStats['peakDaily']))?>, data:<?=json_encode(array_values($solarStats['peakDaily']))?>, unit:' °C'}
+                };
+                const sstatCharts = {};
+
+                function makeSolarStat(id) {
+                    const d      = sstatData[id];
+                    const isPeak = (id === 'peak');
+                    const ctx    = document.getElementById('sstat-'+id).getContext('2d');
+                    sstatCharts[id] = new Chart(ctx, {
+                        type: isPeak ? 'line' : 'bar',
+                        data: {
+                            labels: d.labels,
+                            datasets: [{
+                                label: isPeak ? 'Spitzentemperatur' : 'Sonnenstunden',
+                                data: d.data,
+                                backgroundColor: isPeak ? 'rgba(240,162,2,0.15)' : 'rgba(240,162,2,0.7)',
+                                borderColor: '#f0a202',
+                                borderWidth: isPeak ? 2 : 1,
+                                borderRadius: isPeak ? 0 : 4,
+                                fill: isPeak,
+                                tension: 0.3,
+                                pointRadius: isPeak ? 3 : undefined
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {display: false},
+                                tooltip: {callbacks: {label: ctx => ctx.parsed.y + d.unit}}
+                            },
+                            scales: {
+                                x: {ticks:{color:'#888',maxRotation:45},grid:{color:'rgba(255,255,255,0.05)'}},
+                                y: {beginAtZero:!isPeak,ticks:{color:'#888',callback:v => v + d.unit},grid:{color:'rgba(255,255,255,0.08)'}}
+                            }
+                        }
+                    });
+                }
+
+                function showSolarStat(id, btn) {
+                    document.querySelectorAll('.sstat-tabs button').forEach(b=>b.classList.remove('active'));
+                    document.querySelectorAll('.sstat-wrap canvas').forEach(c=>c.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById('sstat-'+id).classList.add('active');
+                    if (!sstatCharts[id]) makeSolarStat(id);
+                }
+
+                if (sstatData.daily.labels.length > 0) makeSolarStat('daily');
+                </script>
+            <?php else:?>
+                <div class="no-data">
+                    Noch keine Solardaten für eine Statistik vorhanden.<br>
+                    <small>Sobald der stündliche Cronjob die Kollektortemperatur geloggt hat, erscheinen hier die Sonnenstunden.</small>
                 </div>
             <?php endif?>
         </div>
