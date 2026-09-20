@@ -381,6 +381,64 @@ function calc_stock_series(array $counterDaily): array {
 }
 
 /**
+ * Tageswerte der Solar-Variablen fuer die langen Zeitraeume im Graphen.
+ *
+ * Stuendliche Rohwerte ergeben ueber einen Monat rund 720 und ueber ein Jahr
+ * ueber 8000 Punkte -- unlesbar und unnoetig gross. Fuer Monat und Jahr wird
+ * deshalb je Tag das Maximum gezeigt: beim Kollektor ist das die Tagesspitze,
+ * also genau das Signal, das ueber lange Zeitraeume interessiert. Das Mittel
+ * waere dort vom Nachtwert erschlagen.
+ */
+function calc_solar_daily(array $solarConfig, int $days = 365): array {
+    $empty = ['labels' => [], 'series' => []];
+    if (!file_exists(LOG_FILE) || empty($solarConfig)) return $empty;
+
+    $uriMap = [];
+    foreach ($solarConfig as $s) $uriMap[$s['uri']] = $s['name'];
+    $cutoff = strtotime('today') - (($days - 1) * 86400);
+
+    $lines  = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $byDay  = [];
+    foreach ($lines as $line) {
+        $parts = explode("\t", $line);
+        if (count($parts) < 6) continue;
+        $uri = trim($parts[5]);
+        if (!isset($uriMap[$uri])) continue;
+        $ts = strtotime($parts[0]);
+        if ($ts === false || $ts < $cutoff) continue;
+        $day   = date('Y-m-d', $ts);
+        $value = floatval(str_replace(',', '.', $parts[2]));
+        $byDay[$day][$uri] = max($byDay[$day][$uri] ?? -273.0, $value);
+    }
+
+    ksort($byDay);
+    if (empty($byDay)) return $empty;
+
+    $colorMap = [
+        '/120/10221/0/0/12275' => '#ff6b35',
+        '/120/10221/0/0/12197' => '#95d5b2',
+        '/120/10251/0/0/12242' => '#64b5f6',
+        '/120/10251/0/0/12244' => '#4488cc',
+    ];
+
+    $labels = array_map(function($d) { return date('d.m.', strtotime($d)); }, array_keys($byDay));
+    $series = [];
+    foreach (array_keys($uriMap) as $uri) {
+        $data = [];
+        foreach ($byDay as $dayValues) {
+            $data[] = isset($dayValues[$uri]) ? round($dayValues[$uri], 1) : null;
+        }
+        $series[] = [
+            'uri'   => $uri,
+            'name'  => $uriMap[$uri],
+            'data'  => $data,
+            'color' => $colorMap[$uri] ?? '#e94560',
+        ];
+    }
+    return ['labels' => $labels, 'series' => $series];
+}
+
+/**
  * Solarstatistik: Sonnenstunden je Tag/Woche/Monat/Jahr.
  *
  * Der Kessel hat keinen Ertragszaehler -- der Solar-Funktionsblock kennt nur
@@ -783,9 +841,11 @@ if ($action === 'verbrauch') {
 }
 
 $solarTimeseries = ['labels' => [], 'series' => [], 'current' => []];
+$solarDaily      = ['labels' => [], 'series' => []];
 $solarStats      = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'peakDaily'=>[]];
 if ($action === 'solar') {
     $solarTimeseries = calc_solar_timeseries($CONFIG['solar'] ?? []);
+    $solarDaily      = calc_solar_daily($CONFIG['solar'] ?? [], 365);
     $solarStats      = calc_solar_stats(
         $CONFIG['solar_stats']['collector_uri'],
         (float)$CONFIG['solar_stats']['threshold']
@@ -1227,8 +1287,11 @@ if ($action === 'menu') {
                 <div class="chart-tabs">
                     <button class="active" onclick="setSolarRange(24,this)">24 Stunden</button>
                     <button onclick="setSolarRange(48,this)">48 Stunden</button>
-                    <button onclick="setSolarRange(168,this)">7 Tage</button>
+                    <button onclick="setSolarRange(168,this)">Woche</button>
+                    <button onclick="setSolarRange('month',this)">Monat</button>
+                    <button onclick="setSolarRange('year',this)">Jahr</button>
                 </div>
+                <p class="hint" id="solar-chart-note" style="margin:0 0 8px"></p>
                 <div class="solar-chart-wrap">
                     <canvas id="solar-chart"></canvas>
                 </div>
@@ -1236,6 +1299,8 @@ if ($action === 'menu') {
                 <script>
                 const solarAllLabels = <?=json_encode($solarTimeseries['labels'])?>;
                 const solarSeries    = <?=json_encode(array_map(fn($s)=>['name'=>$s['name'],'data'=>$s['data'],'color'=>$s['color']], $solarTimeseries['series']))?>;
+                const solarDayLabels = <?=json_encode($solarDaily['labels'])?>;
+                const solarDaySeries = <?=json_encode(array_map(fn($s)=>['name'=>$s['name'],'data'=>$s['data'],'color'=>$s['color']], $solarDaily['series']))?>;
                 let solarChart = null;
 
                 function setSolarRange(range, btn) {
@@ -1245,16 +1310,29 @@ if ($action === 'menu') {
                 }
 
                 function buildSolarChart(range) {
-                    const n      = solarAllLabels.length;
-                    const start  = Math.max(0, n - range);
-                    const labels = solarAllLabels.slice(start);
-                    const datasets = solarSeries.map(s => ({
+                    // Stundenwerte fuer kurze Zeitraeume, Tageshoechstwerte fuer Monat und Jahr.
+                    const daily  = (range === 'month' || range === 'year');
+                    const days   = (range === 'month') ? 30 : 365;
+                    const srcLab = daily ? solarDayLabels : solarAllLabels;
+                    const srcSer = daily ? solarDaySeries : solarSeries;
+                    const n      = srcLab.length;
+                    const start  = Math.max(0, n - (daily ? days : range));
+                    const labels = srcLab.slice(start);
+
+                    const note = document.getElementById('solar-chart-note');
+                    if (note) {
+                        note.textContent = daily
+                            ? 'Tageshöchstwerte je Variable — ' + labels.length + ' Tage'
+                            : '';
+                    }
+
+                    const datasets = srcSer.map(s => ({
                         label:           s.name,
                         data:            s.data.slice(start),
                         borderColor:     s.color,
                         backgroundColor: s.color + '18',
                         borderWidth:     2,
-                        pointRadius:     range <= 48 ? 3 : 1,
+                        pointRadius:     (!daily && range <= 48) ? 3 : (daily && labels.length <= 40 ? 2 : 0),
                         pointHoverRadius:5,
                         fill:            false,
                         tension:         0.35,

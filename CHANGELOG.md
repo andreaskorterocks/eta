@@ -12,6 +12,10 @@
 - **Kollektorpumpe** (in %) und **Speicher 1 unten** werden ab sofort mitgeloggt, damit die Statistik
   später auf die tatsächliche Pumpenlaufzeit umgestellt werden kann.
 - Neuer Konfigurationsabschnitt `solar_stats`.
+- **Temperatur-Graph mit langen Zeiträumen**: neben 24 Stunden, 48 Stunden und Woche jetzt auch Monat
+  und Jahr. Für die beiden langen Bereiche zeigt der Graph das Tagesmaximum je Variable — stündliche
+  Rohwerte wären über ein Jahr über 8000 Punkte und unlesbar; beim Kollektor ist die Tagesspitze
+  ohnehin das Signal, das über lange Zeiträume zählt.
 
 ### Geändert
 - Die Karte **Vorrat nachtragen** sitzt jetzt unter den Detail-Kacheln am Seitenende statt direkt unter

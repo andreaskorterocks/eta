@@ -12,7 +12,8 @@ Web-Dashboard zur Überwachung und Protokollierung von Pelletverbrauch und Solar
 - **Eigene Vorratsbilanz** statt des Lagerwerts des Kessels — inklusive Nachtragen von Säcken und Lieferungen
 - **Bestandsverlauf** als Linienchart — zeigt wie der Pelletvorrat über die Tage fällt
 - **Verbrauchsstatistik** aus dem Zähler der tatsächlich verbrannten kg (täglich / wöchentlich / monatlich / jährlich)
-- **Solar-Tab** mit Linien-Chart für Kollektor, Puffer oben/unten und Außentemperatur (24h / 48h / 7 Tage)
+- **Solar-Tab** mit Linien-Chart für Kollektor, Puffer oben/unten und Außentemperatur
+  (24 h / 48 h / Woche als Stundenwerte, Monat / Jahr als Tageshöchstwerte)
 - **Solarstatistik** mit Sonnenstunden je Tag / Woche / Monat / Jahr und Spitzentemperatur je Tag
 - **Menubaum-Browser** zum Durchsuchen aller Kessel-Variablen
 - **Konfigurierbares Dashboard** — Kacheln und Hero-Variable über Web-UI anpassen, Solar-Variablen editierbar
@@ -118,6 +119,11 @@ Stunden erfindet.
 **Was die Zahl nicht ist:** kein Ertrag. Steht der Puffer voll, schaltet die Pumpe ab — die Stunde
 zählt trotzdem. Als Vergleich zwischen Tagen, Wochen und Monaten ist sie trotzdem aussagekräftig, weil
 die Bedingung immer dieselbe ist.
+
+**Der Temperatur-Graph** darüber zeigt 24 Stunden, 48 Stunden und eine Woche als stündliche Rohwerte;
+für Monat und Jahr das **Tagesmaximum je Variable**. Über ein Jahr wären Stundenwerte mehr als 8000
+Punkte — unlesbar und unnötig groß. Das Tagesmittel wäre beim Kollektor vom Nachtwert erschlagen, die
+Tagesspitze zeigt den Verlauf über die Jahreszeiten dagegen sauber.
 
 Seit v0.7 werden zusätzlich **Kollektorpumpe** (in %) und **Speicher 1 unten** geloggt. Sobald davon
 genug Historie vorliegt, kann die Statistik auf die tatsächliche Pumpenlaufzeit umgestellt werden —
