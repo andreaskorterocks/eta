@@ -1,0 +1,2 @@
+2026-07-24 22:00:01	bestand	3600	63865	30	Lieferung, Lager war leer
+2026-08-19 07:30:00	sack	15	63870	22	Klemmer, Sack direkt in den Behaelter

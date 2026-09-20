@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.6 — Verbrauch aus dem Zähler, eigene Vorratsbilanz (2026-09-20)
+
+### Behoben
+- **Verbrauchsberechnung lag systematisch falsch.** Sie nutzte den Rückgang des Lagerwerts. Der Kessel
+  verbrennt aber aus dem 30-kg-Vorratsbehälter, der schubweise nachgesaugt wird — gemessen wurde der
+  Saugzeitpunkt, nicht das Verbrennen. Belege aus den Logdaten (Abgleich gegen den Zähler):
+  18.09. wurden 4 kg verbrannt, angezeigt wurden 0 kg; am 19.09. 3 kg verbrannt, angezeigt 7 kg.
+  An Liefertagen (07.03., 26.03., 13.04.) fiel der Tagesverbrauch komplett auf 0, und als die
+  Lagerbuchhaltung am 04.03. auf 0 lief, wurden aus 20 kg angezeigte 46 kg.
+- Verbrauch wird jetzt aus dem Zähler `Gesamtverbrauch` (`/40/10021/0/0/12016`) berechnet — die
+  tatsächlich verbrannten kg. Rückwärtssprünge (Ausreißer, Zählerwechsel) werden verworfen.
+
+### Neu
+- **Eigene Vorratsbilanz** statt des Lagerwerts des Kessels: letzte eingetragene Füllmenge + nachgetragene
+  Säcke − verbrannte kg, aufgeteilt in Lager und Behälter. Der Wert des Kessels wird zum Vergleich
+  daneben angezeigt, inklusive Abweichung.
+- **Vorrat nachtragen** auf dem Dashboard: Button für einen Sack (Gebindegröße über `sack_kg`, Standard
+  15 kg) und Eingabefeld für eine Lieferung. Einträge landen in `pellet_events.txt` und lassen sich
+  einzeln wieder entfernen.
+- Neue Konfigurationsschlüssel `counter`, `hopper` und `sack_kg`, editierbar unter Einstellungen.
+
+### Geändert
+- Zähler und Vorratsbehälter werden immer geloggt (Dashboard und Cronjob), auch ohne eigene Kachel —
+  sie sind die Basis der Rechnung.
+- Bestandsverlauf zeigt den berechneten Gesamtvorrat (Lager + Behälter) statt des Kessel-Lagerwerts.
+- Eintragen von Ereignissen läuft über POST mit Redirect, damit ein Reload nichts verdoppelt.
+
+---
+
 ## v0.5 — Solar-Tab (2026-05-27)
 
 ### Neu

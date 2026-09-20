@@ -5,6 +5,15 @@
         "uri": "/40/10201/0/0/12015",
         "name": "Lager Vorrat"
     },
+    "counter": {
+        "uri": "/40/10021/0/0/12016",
+        "name": "Gesamtverbrauch"
+    },
+    "hopper": {
+        "uri": "/40/10021/0/0/12011",
+        "name": "Inhalt Pelletsbeh\u00e4lter"
+    },
+    "sack_kg": 15,
     "tiles": [
         {
             "uri": "/40/10021/0/0/12016",

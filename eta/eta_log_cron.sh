@@ -54,6 +54,20 @@ if [ -f "$CONFIG_FILE" ]; then
         fetch_and_log "$HERO_URI" "$HERO_NAME"
     fi
 
+    # Zaehler (verbrannte kg) und Vorratsbehaelter sind die Basis der Bilanz im
+    # Dashboard -- immer loggen, auch wenn sie nicht als Kachel konfiguriert sind.
+    COUNTER_URI=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('counter',{}).get('uri',''))" 2>/dev/null)
+    COUNTER_NAME=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('counter',{}).get('name',''))" 2>/dev/null)
+    COUNTER_URI="${COUNTER_URI:-/40/10021/0/0/12016}"
+    COUNTER_NAME="${COUNTER_NAME:-Gesamtverbrauch}"
+    already_logged "$COUNTER_URI" || fetch_and_log "$COUNTER_URI" "$COUNTER_NAME"
+
+    HOPPER_URI=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('hopper',{}).get('uri',''))" 2>/dev/null)
+    HOPPER_NAME=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('hopper',{}).get('name',''))" 2>/dev/null)
+    HOPPER_URI="${HOPPER_URI:-/40/10021/0/0/12011}"
+    HOPPER_NAME="${HOPPER_NAME:-Inhalt Pelletsbehälter}"
+    already_logged "$HOPPER_URI" || fetch_and_log "$HOPPER_URI" "$HOPPER_NAME"
+
     # Tiles
     TILE_COUNT=$(python3 -c "import sys,json;c=json.load(open('$CONFIG_FILE'));print(len(c['tiles']))" 2>/dev/null)
     if [ -n "$TILE_COUNT" ]; then

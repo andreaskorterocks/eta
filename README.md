@@ -8,9 +8,10 @@ Web-Dashboard zur Überwachung und Protokollierung von Pelletverbrauch und Solar
 
 ## Features
 
-- **Live-Dashboard** mit Hero-Anzeige (Lager Vorrat) und konfigurierbaren Kacheln
+- **Live-Dashboard** mit Vorratsbilanz (Lager + Behälter) und konfigurierbaren Kacheln
+- **Eigene Vorratsbilanz** statt des Lagerwerts des Kessels — inklusive Nachtragen von Säcken und Lieferungen
 - **Bestandsverlauf** als Linienchart — zeigt wie der Pelletvorrat über die Tage fällt
-- **Verbrauchsstatistik** mit Chart.js Balkendiagrammen (täglich / wöchentlich / monatlich / jährlich)
+- **Verbrauchsstatistik** aus dem Zähler der tatsächlich verbrannten kg (täglich / wöchentlich / monatlich / jährlich)
 - **Solar-Tab** mit Linien-Chart für Kollektor, Puffer oben/unten und Außentemperatur (24h / 48h / 7 Tage)
 - **Menubaum-Browser** zum Durchsuchen aller Kessel-Variablen
 - **Konfigurierbares Dashboard** — Kacheln und Hero-Variable über Web-UI anpassen, Solar-Variablen editierbar
@@ -58,11 +59,47 @@ Die Konfiguration wird in `config.json` gespeichert und ist vollständig über d
 | Abschnitt | Beschreibung |
 |-----------|-------------|
 | `eta_ip` / `eta_port` | IP-Adresse und Port des ETA Kessels |
-| `hero` | Hero-Variable (groß angezeigt, z.B. Lager Vorrat) |
+| `hero` | Vergleichsvariable des Kessels (wird geloggt und unter der Bilanz als „Kessel meldet" angezeigt) |
+| `counter` | Zähler der verbrannten kg — Basis für Verbrauch und Bilanz (Standard `/40/10021/0/0/12016`) |
+| `hopper` | Vorratsbehälter im Kessel (Standard `/40/10021/0/0/12011`) |
+| `sack_kg` | Gebindegröße für den Sack-Button auf dem Dashboard (Standard 15) |
 | `tiles` | Dashboard-Kacheln mit Name und URI-Pfad |
 | `solar` | Solar-Variablen für den Solar-Tab (Kurven-Logging) |
 
 Kacheln können direkt aus dem **Menubaum** per Klick hinzugefügt (+) oder als Hero gesetzt (★) werden.
+
+### Vorratsbilanz — warum nicht der Lagerwert des Kessels?
+
+Der ETA misst den Lagerbestand nicht, er bucht ihn nur: eingetragene Füllmenge minus verbrannte kg.
+Zwei Dinge laufen dadurch aus dem Ruder:
+
+- **Säcke, die bei einem Klemmer direkt in den Behälter gekippt werden**, kennt diese Buchhaltung nicht.
+  Der Lagerwert wird pro Sack zu niedrig und kann negativ werden (im Testzeitraum bis −14 kg).
+- **Verbrannt wird aus dem 30-kg-Behälter**, der schubweise aus dem Lager nachgesaugt wird. Der Rückgang
+  des Lagerwerts zeigt also den Saugzeitpunkt, nicht das Verbrennen.
+
+Das Dashboard rechnet deshalb selbst:
+
+```
+Vorrat gesamt = (Lager + Behälter beim letzten Bestandseintrag)
+                + nachgetragene Säcke
+                - verbrannte kg laut Zähler
+Lager         = Vorrat gesamt - aktueller Behälterinhalt
+```
+
+Gepflegt wird das auf dem Dashboard unter **Vorrat nachtragen**:
+
+| Eintrag | Wann | Wirkung |
+|---------|------|---------|
+| `+ 15 kg Sack` | Sack von Hand in den Behälter gekippt | erhöht die Bilanz um die Gebindegröße |
+| `Lager befüllt auf … kg` | nach einer Lieferung | setzt die Bilanz neu auf diesen Lagerstand |
+
+Jeder Eintrag speichert den Zählerstand und den Behälterinhalt des Zeitpunkts mit — nur so lässt sich
+der Verlauf später zurückrechnen. Fehleingaben lassen sich in der Liste darunter wieder entfernen.
+
+**Was die Bilanz nicht kann:** Die Kalibrierung der Förderschnecke steckt im Zähler des Kessels. Weicht
+sie ab (geschätzt rund 100 kg pro Heizperiode), weicht auch die Bilanz ab — sichtbar wird das erst, wenn
+ein Lager von leer bis leer durchgelaufen ist.
 
 ### Solar-Variablen (Standardkonfiguration)
 
@@ -88,7 +125,8 @@ ETA/
 │   ├── index.html                   # Redirect
 │   ├── eta_log_cron.sh              # Cronjob-Script (stündlich)
 │   ├── config.example.json          # Beispiel-Konfiguration
-│   └── pellet_verbrauch.example.txt # Beispiel-Logdatei
+│   ├── pellet_verbrauch.example.txt # Beispiel-Logdatei
+│   └── pellet_events.example.txt    # Beispiel-Ereignisdatei (Lieferungen/Säcke)
 └── REST_API_DOC/
     └── ETA-RESTful-v1.2.pdf         # API-Dokumentation
 ```
@@ -96,6 +134,7 @@ ETA/
 Laufzeitdateien (werden automatisch erstellt, nicht ins Git einchecken):
 - `config.json` — Dashboard-Konfiguration
 - `pellet_verbrauch.txt` — Verbrauchslog (Tab-separiert, alle Variablen)
+- `pellet_events.txt` — Bestands-Ereignisse (Lieferungen und Säcke)
 
 ## API
 
@@ -117,6 +156,17 @@ Timestamp          Name          strValue  Unit  rawValue  URI                  
 2026-05-27 10:00   Kollektor     42        °C    420       /120/10221/0/0/12275       cron
 2026-05-27 10:00   Puffer oben   55        °C    552       /120/10251/0/0/12242       cron
 ```
+
+`pellet_events.txt` hält die Bestands-Ereignisse, ebenfalls tab-separiert:
+
+```
+Timestamp             Typ       kg    Zählerstand  Behälter  Notiz
+2026-07-24 22:00:01   bestand   3600  63865        30        Lieferung, Lager war leer
+2026-08-19 07:30:00   sack      15    63870        22        Klemmer, Sack in den Behälter
+```
+
+`bestand` setzt den Lagerstand neu, `sack` trägt eine Menge nach, die am Lager vorbei in den
+Behälter gegangen ist.
 
 ## Changelog
 

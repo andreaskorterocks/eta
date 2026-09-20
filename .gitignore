@@ -1,6 +1,7 @@
 # Runtime-Dateien (werden auf dem Server generiert)
 eta/config.json
 eta/pellet_verbrauch.txt
+eta/pellet_events.txt
 
 # OS
 .DS_Store

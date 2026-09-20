@@ -7,6 +7,7 @@
 // ── Konfiguration ──────────────────────────────────────────────
 define('LOG_FILE', __DIR__ . '/pellet_verbrauch.txt');
 define('CONFIG_FILE', __DIR__ . '/config.json');
+define('EVENTS_FILE', __DIR__ . '/pellet_events.txt');
 
 define('DEFAULT_CONFIG', json_encode([
     'eta_ip'   => '192.168.88.36',
@@ -15,6 +16,18 @@ define('DEFAULT_CONFIG', json_encode([
         'uri'  => '/40/10201/0/0/12015',
         'name' => 'Lager Vorrat',
     ],
+    // Zaehler der tatsaechlich verbrannten kg -- Basis fuer Verbrauch und Bilanz.
+    'counter' => [
+        'uri'  => '/40/10021/0/0/12016',
+        'name' => 'Gesamtverbrauch',
+    ],
+    // Vorratsbehaelter im Kessel (fasst rund 30 kg), wird aus dem Lager nachgesaugt.
+    'hopper' => [
+        'uri'  => '/40/10021/0/0/12011',
+        'name' => 'Inhalt Pelletsbehälter',
+    ],
+    // Gebindegroesse fuer den Sack-Button auf dem Dashboard.
+    'sack_kg' => 15,
     'tiles' => [
         ['uri' => '/40/10021/0/0/12016', 'name' => 'Gesamtverbrauch'],
         ['uri' => '/40/10021/0/0/12011', 'name' => 'Inhalt Pelletsbehälter'],
@@ -40,6 +53,9 @@ function load_config(): array {
             if (!isset($config['eta_ip']))   $config['eta_ip']   = $defaults['eta_ip'];
             if (!isset($config['eta_port'])) $config['eta_port'] = $defaults['eta_port'];
             if (!isset($config['solar']))    $config['solar']    = $defaults['solar'];
+            if (!isset($config['counter']))  $config['counter']  = $defaults['counter'];
+            if (!isset($config['hopper']))   $config['hopper']   = $defaults['hopper'];
+            if (!isset($config['sack_kg']))  $config['sack_kg']  = $defaults['sack_kg'];
             return $config;
         }
     }
@@ -132,45 +148,177 @@ function read_log(int $limit = 50): array {
     return $entries;
 }
 
-function calc_consumption(string $heroUri): array {
+/**
+ * Bestands-Ereignisse (Befuellungen und Saecke).
+ *
+ * Der Kessel misst das Lager nicht, er bucht nur: eingetragene Fuellmenge minus
+ * verbrannte kg. Saecke, die bei einem Klemmer von Hand in den Behaelter gekippt
+ * werden, laufen an dieser Buchhaltung vorbei -- der Lagerwert wird dadurch mit
+ * der Zeit zu niedrig und kann negativ werden. Deshalb fuehrt das Dashboard die
+ * Bilanz selbst, auf Basis des Zaehlers der tatsaechlich verbrannten kg.
+ *
+ * Format (Tab-separiert): Zeitstempel, Typ, kg, Zaehlerstand, Behaelterinhalt, Notiz
+ * Typen: 'bestand' = Lager enthaelt jetzt X kg, 'sack' = X kg direkt nachgefuellt.
+ */
+function read_events(): array {
+    if (!file_exists(EVENTS_FILE)) return [];
+    $lines  = file(EVENTS_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $events = [];
+    foreach ($lines as $line) {
+        $p = explode("\t", $line);
+        if (count($p) < 5) continue;
+        $ts = strtotime($p[0]);
+        if ($ts === false) continue;
+        $events[] = [
+            'ts'        => $ts,
+            'timestamp' => $p[0],
+            'type'      => trim($p[1]),
+            'kg'        => floatval(str_replace(',', '.', $p[2])),
+            'counter'   => floatval(str_replace(',', '.', $p[3])),
+            'hopper'    => floatval(str_replace(',', '.', $p[4])),
+            'note'      => trim($p[5] ?? ''),
+        ];
+    }
+    usort($events, function($a, $b) { return $a['ts'] <=> $b['ts']; });
+    return $events;
+}
+
+function append_event(string $type, float $kg, float $counter, float $hopper, string $note = ''): bool {
+    $line = date('Y-m-d H:i:s') . "\t" . $type . "\t" . $kg . "\t" . $counter . "\t" . $hopper
+          . "\t" . str_replace(["\t", "\n"], ' ', $note) . "\n";
+    return file_put_contents(EVENTS_FILE, $line, FILE_APPEND | LOCK_EX) !== false;
+}
+
+function delete_event(int $idx): ?array {
+    $events = read_events();
+    if (!isset($events[$idx])) return null;
+    $removed = $events[$idx];
+    unset($events[$idx]);
+    $out = '';
+    foreach ($events as $e) {
+        $out .= $e['timestamp'] . "\t" . $e['type'] . "\t" . $e['kg'] . "\t" . $e['counter']
+              . "\t" . $e['hopper'] . "\t" . $e['note'] . "\n";
+    }
+    return file_put_contents(EVENTS_FILE, $out, LOCK_EX) !== false ? $removed : null;
+}
+
+/** Letzter geloggter Wert einer Variablen -- Rueckfallebene, wenn der Kessel nicht antwortet. */
+function last_logged_value(string $uri): ?float {
+    if (!file_exists(LOG_FILE)) return null;
+    $lines = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    for ($i = count($lines) - 1; $i >= 0; $i--) {
+        $p = explode("\t", $lines[$i]);
+        if (count($p) < 6 || trim($p[5]) !== $uri) continue;
+        return floatval(str_replace(',', '.', $p[2]));
+    }
+    return null;
+}
+
+/** Aktueller Wert: erst den Kessel fragen, sonst den letzten Logeintrag nehmen. */
+function current_value(string $uri): ?float {
+    $data = read_variable($uri);
+    if ($data !== null && $data['strValue'] !== '') {
+        return floatval(str_replace(',', '.', $data['strValue']));
+    }
+    return last_logged_value($uri);
+}
+
+/**
+ * Bilanz des tatsaechlich vorhandenen Vorrats:
+ *
+ *   Gesamt = (Lager + Behaelter beim letzten Bestands-Eintrag)
+ *            + seither nachgefuellte Saecke
+ *            - seither verbrannte kg (Zaehler)
+ *   Lager  = Gesamt - aktueller Behaelterinhalt
+ *
+ * Der Zaehler ist die einzige Groesse, die den echten Verbrauch misst.
+ */
+function calc_stock(?float $counterNow, ?float $hopperNow): array {
+    $stock = [
+        'ok'     => false,
+        'reason' => '',
+        'total'  => null,
+        'lager'  => null,
+        'hopper' => $hopperNow,
+        'base'   => null,
+        'sacks'  => 0.0,
+        'burned' => null,
+    ];
+
+    $events = read_events();
+    $base   = null;
+    foreach ($events as $e) {
+        if ($e['type'] === 'bestand') $base = $e;
+    }
+    if ($base === null) {
+        $stock['reason'] = 'Noch kein Bestand eingetragen — unten die Fuellmenge des Lagers eintragen.';
+        return $stock;
+    }
+    if ($counterNow === null) {
+        $stock['reason'] = 'Zaehlerstand (' . $GLOBALS['CONFIG']['counter']['name'] . ') nicht lesbar.';
+        return $stock;
+    }
+
+    $sacks = 0.0;
+    foreach ($events as $e) {
+        if ($e['type'] === 'sack' && $e['ts'] >= $base['ts']) $sacks += $e['kg'];
+    }
+
+    $burned = $counterNow - $base['counter'];
+    $total  = $base['kg'] + $base['hopper'] + $sacks - $burned;
+
+    $stock['ok']     = true;
+    $stock['base']   = $base;
+    $stock['sacks']  = $sacks;
+    $stock['burned'] = $burned;
+    $stock['total']  = $total;
+    $stock['lager']  = ($hopperNow !== null) ? $total - $hopperNow : null;
+    return $stock;
+}
+
+/**
+ * Verbrauch je Tag/Woche/Monat/Jahr aus dem Zaehler der verbrannten kg.
+ *
+ * Frueher wurde dafuer der Rueckgang des Lagerwerts benutzt. Das ging schief:
+ * der Kessel verbrennt nicht aus dem Lager, sondern aus dem Vorratsbehaelter,
+ * der schubweise nachgesaugt wird -- gemessen wurde also der Saugzeitpunkt,
+ * nicht das Verbrennen. An Liefertagen fiel der Tagesverbrauch komplett aus,
+ * und sobald die Lagerbuchhaltung auf 0 lief, wurden die Werte unsinnig.
+ */
+function calc_consumption(string $counterUri): array {
     $empty = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stockDaily'=>[]];
     if (!file_exists(LOG_FILE)) return $empty;
 
-    $lines = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $lines    = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     $readings = [];
     foreach ($lines as $line) {
         $parts = explode("\t", $line);
         if (count($parts) < 6) continue;
-        $uri = trim($parts[5] ?? '');
-        if ($uri !== $heroUri) continue;
+        if (trim($parts[5] ?? '') !== $counterUri) continue;
         $ts = strtotime($parts[0]);
         if ($ts === false) continue;
         // strValue (parts[2]) verwenden, nicht rawValue (parts[4])
-        $val = floatval(str_replace(',', '.', $parts[2]));
-        $readings[] = ['ts' => $ts, 'value' => $val];
+        $readings[] = ['ts' => $ts, 'value' => floatval(str_replace(',', '.', $parts[2]))];
     }
 
     if (count($readings) < 2) return $empty;
+    usort($readings, function($a, $b) { return $a['ts'] <=> $b['ts']; });
 
-    // Bestandsverlauf: letzter Wert pro Tag
-    $stockDaily = [];
-    foreach ($readings as $r) {
-        $day = date('Y-m-d', $r['ts']);
-        $stockDaily[$day] = $r['value'];
-    }
+    $daily = $weekly = $monthly = $yearly = $counterDaily = [];
 
-    $daily = $weekly = $monthly = $yearly = [];
+    foreach ($readings as $i => $r) {
+        $counterDaily[date('Y-m-d', $r['ts'])] = $r['value'];
+        if ($i === 0) continue;
 
-    for ($i = 1; $i < count($readings); $i++) {
-        $prev = $readings[$i - 1];
-        $curr = $readings[$i];
-        $diff = $prev['value'] - $curr['value'];
+        // Der Zaehler laeuft nur vorwaerts. Ein Rueckwaertssprung ist ein
+        // Ausreisser oder ein Zaehlerwechsel -- beides ist kein Verbrauch.
+        $diff = $r['value'] - $readings[$i - 1]['value'];
         if ($diff <= 0) continue;
 
-        $day   = date('Y-m-d', $curr['ts']);
-        $week  = date('o-\KW', $curr['ts']);
-        $month = date('Y-m', $curr['ts']);
-        $year  = date('Y', $curr['ts']);
+        $day   = date('Y-m-d', $r['ts']);
+        $week  = date('o-\KW', $r['ts']);
+        $month = date('Y-m', $r['ts']);
+        $year  = date('Y', $r['ts']);
 
         $daily[$day]     = ($daily[$day] ?? 0) + $diff;
         $weekly[$week]   = ($weekly[$week] ?? 0) + $diff;
@@ -178,10 +326,13 @@ function calc_consumption(string $heroUri): array {
         $yearly[$year]   = ($yearly[$year] ?? 0) + $diff;
     }
 
+    $stockDaily = calc_stock_series($counterDaily);
+
     foreach ($daily   as &$v) $v = round($v);
     foreach ($weekly  as &$v) $v = round($v);
     foreach ($monthly as &$v) $v = round($v);
     foreach ($yearly  as &$v) $v = round($v);
+    unset($v);
 
     $daily   = array_slice($daily,   -30, null, true);
     $weekly  = array_slice($weekly,  -12, null, true);
@@ -190,6 +341,33 @@ function calc_consumption(string $heroUri): array {
     $stockDaily = array_slice($stockDaily, -60, null, true);
 
     return compact('daily', 'weekly', 'monthly', 'yearly', 'stockDaily');
+}
+
+/**
+ * Bestandsverlauf: Vorrat (Lager + Behaelter) je Tag, zurueckgerechnet aus den
+ * Bestands-Ereignissen und dem Zaehler. Tage vor dem ersten Eintrag bleiben
+ * leer -- fuer sie ist nicht bekannt, wie voll das Lager war.
+ */
+function calc_stock_series(array $counterDaily): array {
+    $events = read_events();
+    if (!$events) return [];
+
+    $series = [];
+    foreach ($counterDaily as $day => $counterVal) {
+        $dayEnd = strtotime($day . ' 23:59:59');
+        $base   = null;
+        foreach ($events as $e) {
+            if ($e['type'] === 'bestand' && $e['ts'] <= $dayEnd) $base = $e;
+        }
+        if ($base === null) continue;
+
+        $sacks = 0.0;
+        foreach ($events as $e) {
+            if ($e['type'] === 'sack' && $e['ts'] >= $base['ts'] && $e['ts'] <= $dayEnd) $sacks += $e['kg'];
+        }
+        $series[$day] = round($base['kg'] + $base['hopper'] + $sacks - ($counterVal - $base['counter']));
+    }
+    return $series;
 }
 
 /**
@@ -286,7 +464,7 @@ function render_objects(SimpleXMLElement $parent, bool $showAddButtons = false):
 // ── Request-Handling ────────────────────────────────────────────
 $action  = $_GET['action'] ?? 'dashboard';
 $varUri  = $_GET['uri'] ?? $CONFIG['hero']['uri'];
-$message = '';
+$message = isset($_GET['msg']) ? (string)$_GET['msg'] : '';
 $error   = '';
 
 if ($action === 'addtile' && isset($_GET['uri'], $_GET['name'])) {
@@ -355,6 +533,14 @@ if ($action === 'savesettings' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($heroUri && $heroName) {
         $CONFIG['hero'] = ['uri' => $heroUri, 'name' => $heroName];
     }
+    foreach (['counter', 'hopper'] as $key) {
+        $uri  = trim($_POST[$key . '_uri'] ?? '');
+        $name = trim($_POST[$key . '_name'] ?? '');
+        if ($uri && $name) $CONFIG[$key] = ['uri' => $uri, 'name' => $name];
+    }
+    $sackKg = floatval(str_replace(',', '.', trim($_POST['sack_kg'] ?? '')));
+    if ($sackKg > 0) $CONFIG['sack_kg'] = $sackKg;
+
     $tileUris  = $_POST['tile_uri'] ?? [];
     $tileNames = $_POST['tile_name'] ?? [];
     $newTiles  = [];
@@ -380,6 +566,43 @@ if ($action === 'savesettings' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $action   = 'settings';
 }
 
+if ($action === 'addevent' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $type = ($_POST['type'] ?? '') === 'bestand' ? 'bestand' : 'sack';
+    $kg   = floatval(str_replace(',', '.', trim($_POST['kg'] ?? '')));
+
+    if ($kg <= 0) {
+        $error = 'Bitte eine Menge groesser 0 eintragen.';
+    } else {
+        // Zaehlerstand und Behaelterinhalt zum Zeitpunkt des Eintrags festhalten --
+        // ohne sie laesst sich die Bilanz spaeter nicht zurueckrechnen.
+        $counter = current_value($CONFIG['counter']['uri']);
+        $hopper  = current_value($CONFIG['hopper']['uri']);
+        if ($counter === null) {
+            $error = 'Zaehlerstand nicht lesbar — Eintrag nicht gespeichert.';
+        } elseif (!append_event($type, $kg, $counter, $hopper ?? 0.0, trim($_POST['note'] ?? ''))) {
+            $error = 'Eintrag konnte nicht gespeichert werden (Schreibrechte?).';
+        } else {
+            $msg = ($type === 'bestand')
+                ? 'Bestand eingetragen: Lager enthaelt jetzt ' . round($kg) . ' kg.'
+                : round($kg) . ' kg Sack nachgetragen.';
+            // Redirect, damit ein Reload den Eintrag nicht verdoppelt.
+            header('Location: ?action=dashboard&msg=' . rawurlencode($msg));
+            exit;
+        }
+    }
+    $action = 'dashboard';
+}
+
+if ($action === 'delevent' && isset($_GET['idx'])) {
+    $removed = delete_event((int)$_GET['idx']);
+    if ($removed === null) {
+        $error = 'Eintrag nicht gefunden.';
+    } else {
+        $message = 'Eintrag entfernt: ' . $removed['timestamp'] . ' (' . round($removed['kg']) . ' kg)';
+    }
+    $action = 'dashboard';
+}
+
 if ($action === 'fetchall') {
     $count      = 0;
     $loggedUris = [];
@@ -390,6 +613,18 @@ if ($action === 'fetchall') {
         $loggedUris[] = $CONFIG['hero']['uri'];
         $count++;
     }
+    // Zaehler und Behaelter sind die Basis der Bilanz -- immer mitloggen, auch
+    // wenn sie nicht als Kachel konfiguriert sind.
+    foreach ([$CONFIG['counter'], $CONFIG['hopper']] as $must) {
+        if (in_array($must['uri'], $loggedUris)) continue;
+        $data = read_variable($must['uri']);
+        if ($data) {
+            log_value($must['uri'], $must['name'], $data['strValue'], $data['unit'], $data['rawValue']);
+            $loggedUris[] = $must['uri'];
+            $count++;
+        }
+    }
+
     foreach ($CONFIG['tiles'] as $tile) {
         if (in_array($tile['uri'], $loggedUris)) continue;
         $data = read_variable($tile['uri']);
@@ -430,6 +665,10 @@ if ($action === 'fetch') {
 
 $heroData      = null;
 $dashboardData = [];
+$stock         = ['ok' => false, 'reason' => '', 'total' => null, 'lager' => null,
+                  'hopper' => null, 'base' => null, 'sacks' => 0.0, 'burned' => null];
+$events        = [];
+$kesselLager   = null;
 if ($action === 'dashboard') {
     $heroData = read_variable($CONFIG['hero']['uri']);
     foreach ($CONFIG['tiles'] as $idx => $tile) {
@@ -440,11 +679,28 @@ if ($action === 'dashboard') {
             'data' => $data,
         ];
     }
+
+    // Bereits abgerufene Werte wiederverwenden, statt den Kessel doppelt zu fragen.
+    $liveValues = [];
+    if ($heroData) {
+        $liveValues[$CONFIG['hero']['uri']] = floatval(str_replace(',', '.', $heroData['strValue']));
+    }
+    foreach ($dashboardData as $item) {
+        if ($item['data']) {
+            $liveValues[$item['uri']] = floatval(str_replace(',', '.', $item['data']['strValue']));
+        }
+    }
+    $counterNow = $liveValues[$CONFIG['counter']['uri']] ?? current_value($CONFIG['counter']['uri']);
+    $hopperNow  = $liveValues[$CONFIG['hopper']['uri']]  ?? current_value($CONFIG['hopper']['uri']);
+
+    $stock       = calc_stock($counterNow, $hopperNow);
+    $events      = read_events();
+    $kesselLager = $liveValues[$CONFIG['hero']['uri']] ?? null;
 }
 
-$consumption = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stock'=>[]];
+$consumption = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stockDaily'=>[]];
 if ($action === 'verbrauch') {
-    $consumption = calc_consumption($CONFIG['hero']['uri']);
+    $consumption = calc_consumption($CONFIG['counter']['uri']);
 }
 
 $solarTimeseries = ['labels' => [], 'series' => [], 'current' => []];
@@ -482,6 +738,19 @@ if ($action === 'menu') {
         .hero-card .hero-value{font-size:3.5em;font-weight:bold;color:#e94560;line-height:1.1}
         .hero-card .hero-unit{font-size:.35em;color:#888;margin-left:6px}
         .hero-card .hero-uri{font-size:.7em;color:#555;margin-top:6px;font-family:monospace}
+        .hero-card .hero-sub{color:#95d5b2;font-size:1em;margin-top:10px}
+        .hero-card .hero-note{color:#8a97a5;font-size:.75em;margin-top:8px;line-height:1.6}
+        .hero-card .hero-warn{color:#f0a202;font-size:.8em;margin-top:8px}
+        .hint{color:#888;font-size:.85em;line-height:1.5;margin-bottom:12px}
+        .stock-forms{display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px}
+        .stock-form{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+        .stock-form label{color:#95d5b2;font-size:.85em}
+        .stock-form input[type="text"]{width:80px;padding:8px 10px;background:#0f3460;color:#eee;border:1px solid #333;border-radius:6px;font-size:.9em;font-family:inherit}
+        .stock-form input[type="text"]:focus{outline:none;border-color:#e94560}
+        .event-table{margin-top:16px;font-size:.85em}
+        .event-table th{text-align:left;color:#888;font-weight:normal;padding:4px 6px;border-bottom:1px solid #0f3460}
+        .event-table td{padding:6px;border-bottom:1px solid #0f3460;color:#ddd}
+        .event-table .ev-del{color:#e94560;text-decoration:none}
         .var-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
         .var-card{background:#0f3460;border-radius:8px;padding:10px;position:relative}
         .var-card .var-name{color:#95d5b2;font-size:.75em;margin-bottom:3px;padding-right:20px}
@@ -599,17 +868,78 @@ if ($action === 'menu') {
 
     <?php if($action==='dashboard'):?>
 
+        <?php $fmt = function($v) { return number_format((float)$v, 0, ',', '.'); }; ?>
         <div class="hero-card">
-            <div class="hero-label"><?=htmlspecialchars($CONFIG['hero']['name'])?></div>
-            <?php if($heroData):?>
+            <div class="hero-label">Vorrat gesamt</div>
+            <?php if($stock['ok']):?>
                 <div class="hero-value">
-                    <?=htmlspecialchars($heroData['strValue'])?>
-                    <span class="hero-unit"><?=htmlspecialchars($heroData['unit'])?></span>
+                    <?=$fmt($stock['total'])?>
+                    <span class="hero-unit">kg</span>
                 </div>
+                <div class="hero-sub">
+                    <?php if($stock['lager'] !== null):?>
+                        Lager <?=$fmt($stock['lager'])?> kg + Behälter <?=$fmt($stock['hopper'])?> kg
+                    <?php else:?>
+                        Behälterinhalt nicht lesbar — Aufteilung unbekannt
+                    <?php endif?>
+                </div>
+                <div class="hero-note">
+                    Basis <?=date('d.m.Y', $stock['base']['ts'])?>:
+                    <?=$fmt($stock['base']['kg'] + $stock['base']['hopper'])?> kg<?php
+                    if($stock['sacks'] > 0):?> + <?=$fmt($stock['sacks'])?> kg Säcke<?php endif?>
+                    − <?=$fmt($stock['burned'])?> kg verbrannt
+                    <?php if($kesselLager !== null):?>
+                        <br>Kessel meldet <?=htmlspecialchars($CONFIG['hero']['name'])?>: <?=$fmt($kesselLager)?> kg
+                        <?php $abw = ($stock['lager'] !== null) ? $stock['lager'] - $kesselLager : null; ?>
+                        <?php if($abw !== null && abs($abw) >= 1):?>
+                            (<?=($abw > 0 ? '+' : '')?><?=$fmt($abw)?> kg Abweichung)
+                        <?php endif?>
+                    <?php endif?>
+                </div>
+                <?php if($stock['total'] < 0):?>
+                    <div class="hero-warn">Bilanz ist negativ — es fehlt eine Befüllung oder ein Sack im Protokoll.</div>
+                <?php endif?>
             <?php else:?>
                 <div class="hero-value err">--</div>
+                <div class="hero-sub"><?=htmlspecialchars($stock['reason'])?></div>
             <?php endif?>
-            <div class="hero-uri"><?=htmlspecialchars($CONFIG['hero']['uri'])?></div>
+        </div>
+
+        <div class="card">
+            <h2>Vorrat nachtragen</h2>
+            <p class="hint">
+                Der Kessel misst das Lager nicht, er rechnet nur: eingetragene Füllmenge minus verbrannte kg.
+                Säcke, die bei einem Klemmer direkt in den Behälter gekippt werden, kennt er nicht — hier
+                eingetragen, stimmt die Bilanz oben weiter.
+            </p>
+            <div class="stock-forms">
+                <form method="post" action="?action=addevent" class="stock-form">
+                    <input type="hidden" name="type" value="sack">
+                    <input type="hidden" name="kg" value="<?=htmlspecialchars((string)$CONFIG['sack_kg'])?>">
+                    <button type="submit" class="btn">+ <?=htmlspecialchars((string)$CONFIG['sack_kg'])?> kg Sack</button>
+                </form>
+                <form method="post" action="?action=addevent" class="stock-form">
+                    <input type="hidden" name="type" value="bestand">
+                    <label>Lager befüllt auf</label>
+                    <input type="text" name="kg" inputmode="decimal" placeholder="3600">
+                    <span style="color:#888">kg</span>
+                    <button type="submit" class="btn btn-outline">Eintragen</button>
+                </form>
+            </div>
+            <?php if($events):?>
+                <div class="table-scroll"><table class="event-table">
+                    <tr><th>Zeitpunkt</th><th>Art</th><th>Menge</th><th>Zählerstand</th><th></th></tr>
+                    <?php foreach(array_reverse($events, true) as $idx => $e):?>
+                        <tr>
+                            <td><?=htmlspecialchars($e['timestamp'])?></td>
+                            <td><?=$e['type'] === 'bestand' ? 'Lager befüllt auf' : 'Sack'?></td>
+                            <td><?=$fmt($e['kg'])?> kg</td>
+                            <td><?=$fmt($e['counter'])?> kg</td>
+                            <td><a href="?action=delevent&idx=<?=$idx?>" class="ev-del" title="Eintrag entfernen" onclick="return confirm('Eintrag entfernen?')">&times;</a></td>
+                        </tr>
+                    <?php endforeach?>
+                </table></div>
+            <?php endif?>
         </div>
 
         <div class="card">
@@ -643,6 +973,10 @@ if ($action === 'menu') {
 
         <div class="card">
             <h2>Pelletverbrauch</h2>
+            <p class="hint">
+                Basis ist der Zähler „<?=htmlspecialchars($CONFIG['counter']['name'])?>" — die tatsächlich
+                verbrannten kg. Der Bestandsverlauf zeigt Lager + Behälter aus der eigenen Bilanz.
+            </p>
             <?php
                 $hasStock = !empty($consumption['stockDaily']);
                 $hasConsumption = !empty($consumption['daily']) || !empty($consumption['weekly'])
@@ -710,7 +1044,7 @@ if ($action === 'menu') {
                         data: {
                             labels: labels,
                             datasets: [{
-                                label: isStock ? 'Lager Vorrat (kg)' : 'Verbrauch (kg)',
+                                label: isStock ? 'Vorrat gesamt (kg)' : 'Verbrauch (kg)',
                                 data: data,
                                 backgroundColor: isStock ? 'rgba(149,213,178,0.15)' : 'rgba(233,69,96,0.7)',
                                 borderColor: isStock ? '#95d5b2' : '#e94560',
@@ -750,7 +1084,8 @@ if ($action === 'menu') {
             <?php else:?>
                 <div class="no-data">
                     Noch keine Verbrauchsdaten vorhanden.<br>
-                    <small>Der Cronjob muss mindestens 2x gelaufen sein, damit ein Verbrauch berechnet werden kann.</small>
+                    <small>Der Cronjob muss den Zähler „<?=htmlspecialchars($CONFIG['counter']['name'])?>"
+                    mindestens 2x geloggt haben, damit ein Verbrauch berechnet werden kann.</small>
                 </div>
             <?php endif?>
         </div>
@@ -958,6 +1293,38 @@ if ($action === 'menu') {
                         <label>URI-Pfad</label>
                         <input type="text" name="hero_uri" value="<?=htmlspecialchars($CONFIG['hero']['uri'])?>">
                     </div>
+                </div>
+                </div>
+
+                <div class="settings-section">
+                <h3 style="color:#95d5b2;font-size:.95em;margin-bottom:4px">Vorratsbilanz</h3>
+                <p style="color:#888;font-size:.8em;margin-bottom:10px">Zähler und Behälter sind die Basis für Verbrauch und Vorratsanzeige. Sie werden immer geloggt, auch ohne eigene Kachel.</p>
+                <div class="tile-row" style="grid-template-columns:1fr 2fr">
+                    <div>
+                        <label>Zähler (verbrannte kg)</label>
+                        <input type="text" name="counter_name" value="<?=htmlspecialchars($CONFIG['counter']['name'])?>">
+                    </div>
+                    <div>
+                        <label>URI-Pfad</label>
+                        <input type="text" name="counter_uri" value="<?=htmlspecialchars($CONFIG['counter']['uri'])?>">
+                    </div>
+                </div>
+                <div class="tile-row" style="grid-template-columns:1fr 2fr">
+                    <div>
+                        <label>Vorratsbehälter</label>
+                        <input type="text" name="hopper_name" value="<?=htmlspecialchars($CONFIG['hopper']['name'])?>">
+                    </div>
+                    <div>
+                        <label>URI-Pfad</label>
+                        <input type="text" name="hopper_uri" value="<?=htmlspecialchars($CONFIG['hopper']['uri'])?>">
+                    </div>
+                </div>
+                <div class="tile-row" style="grid-template-columns:1fr 2fr">
+                    <div>
+                        <label>Sackgröße (kg)</label>
+                        <input type="text" name="sack_kg" value="<?=htmlspecialchars((string)$CONFIG['sack_kg'])?>">
+                    </div>
+                    <div></div>
                 </div>
                 </div>
 
