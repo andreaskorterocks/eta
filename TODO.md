@@ -8,6 +8,13 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
       geschätzt um rund 100 kg pro Heizperiode ab (Kalibrierung der Förderschnecke). Der Vergleichswert
       fällt beim nächsten Befüllen an, wenn das Lager wieder leergefahren ist:
 
+      0. **Früherer Messpunkt: der erste Sack.** Wenn die Schnecke nichts mehr fördert, ist das Lager
+         leergefahren. Was die Bilanz dann noch anzeigt, ist der aufgelaufene Zählerfehler seit dem
+         24.07. Der Zählerstand dazu wird beim Drücken von „+ 15 kg Sack" automatisch in
+         `pellet_events.txt` mitgeschrieben — also beim *ersten* Sack drücken, nicht erst beim dritten.
+         Zusätzlich „Lager befüllt auf 0 kg" (oder die geschätzte Restmenge) eintragen, dann steht die
+         Bilanz wieder auf der Wahrheit. Einschränkung: eine Restmenge in den Ecken erreicht die
+         Schnecke nie (grob 50–150 kg), der Punkt ist also nicht exakt 0 kg.
       1. **Vor dem Befüllen** den Zählerstand notieren (Kachel „Gesamtverbrauch", oder letzte Zeile zu
          `/40/10021/0/0/12016` in `pellet_verbrauch.txt`).
       2. **Gelieferte Menge** vom Lieferschein festhalten.

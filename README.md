@@ -98,8 +98,9 @@ Jeder Eintrag speichert den Zählerstand und den Behälterinhalt des Zeitpunkts 
 der Verlauf später zurückrechnen. Fehleingaben lassen sich in der Liste darunter wieder entfernen.
 
 **Was die Bilanz nicht kann:** Die Kalibrierung der Förderschnecke steckt im Zähler des Kessels. Weicht
-sie ab (geschätzt rund 100 kg pro Heizperiode), weicht auch die Bilanz ab — sichtbar wird das erst, wenn
-ein Lager von leer bis leer durchgelaufen ist.
+sie ab (geschätzt rund 100 kg pro Heizperiode), weicht auch die Bilanz ab. Sichtbar wird das, wenn das
+Lager leergefahren ist — also beim ersten Sack, den die Schnecke nicht mehr ersetzen kann: was die Bilanz
+dann noch anzeigt, ist der aufgelaufene Fehler (abzüglich der Restmenge, die die Schnecke nie erreicht).
 
 ### Solar-Variablen (Standardkonfiguration)
 
