@@ -24,6 +24,22 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
       4. Faktor = tatsächlich verbraucht / laut Zähler. Erst dann als Korrektur einbauen — vorher
          nicht raten.
 
+      **Bekannte Eckdaten (Stand 20.09.2026):** ETA PU 15, Baujahr 2014, im Kessel auf **11 kW**
+      konfiguriert (Typenschild 14,9 kW); Wirkungsgrad **92–94 %**, zuletzt vom Kaminfeger bestätigt;
+      Pellets-Zwischenbehälter 30 kg (Datenblatt). Gemessen Feb–Sep 2026: 612,8 Volllaststunden,
+      1.478 kg → **2,412 kg je Volllaststunde**. Erwartung bei 11 kW: 2,60 (4,6 kWh/kg, 92 %) bis
+      2,34 (5,0 kWh/kg, 94 %) — der Zähler liegt damit zwischen 7 % zu niedrig und 3 % zu hoch,
+      in kg: **−44 bis +115 kg** auf den Zeitraum. Die vermuteten ~100 kg liegen am Ende mit
+      niedrigem Heizwert und sind damit plausibel, aber nicht belegt.
+
+      **Nebenprodukt der Kalibrierung:** Da Leistung und Wirkungsgrad feststehen, liefert die
+      Massenbilanz über eine volle Lagerfüllung zusätzlich den tatsächlichen **Heizwert** der
+      gelieferten Pellets — die einzige noch offene Größe in der Rechnung.
+
+      **Offen:** Der Februar 2026 fällt mit 2,723 kg/Volllaststunde aus der Reihe (übrige Monate
+      2,19–2,37). Der Wirkungsgradunterschied Voll-/Teillast erklärt davon nur rund 2 %. Falls die
+      Leistungskonfiguration erst nach Februar auf 11 kW gesetzt wurde, wäre das die Erklärung.
+
 - [ ] **Solarstatistik auf Pumpenlaufzeit umstellen.** Seit 20.09.2026 werden `Kollektorpumpe` (%) und
       `Speicher 1 unten` mitgeloggt. Sobald ein paar Wochen Historie da sind, kann die Statistik von den
       Sonnenstunden (Kollektor über Schwelle) auf die tatsächliche Förderzeit umgestellt werden — das ist
