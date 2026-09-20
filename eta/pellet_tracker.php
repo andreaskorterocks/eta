@@ -296,7 +296,7 @@ function calc_stock(?float $counterNow, ?float $hopperNow): array {
  * und sobald die Lagerbuchhaltung auf 0 lief, wurden die Werte unsinnig.
  */
 function calc_consumption(string $counterUri): array {
-    $empty = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stockDaily'=>[]];
+    $empty = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[]];
     if (!file_exists(LOG_FILE)) return $empty;
 
     $lines    = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -314,10 +314,9 @@ function calc_consumption(string $counterUri): array {
     if (count($readings) < 2) return $empty;
     usort($readings, function($a, $b) { return $a['ts'] <=> $b['ts']; });
 
-    $daily = $weekly = $monthly = $yearly = $counterDaily = [];
+    $daily = $weekly = $monthly = $yearly = [];
 
     foreach ($readings as $i => $r) {
-        $counterDaily[date('Y-m-d', $r['ts'])] = $r['value'];
         if ($i === 0) continue;
 
         // Der Zaehler laeuft nur vorwaerts. Ein Rueckwaertssprung ist ein
@@ -336,8 +335,6 @@ function calc_consumption(string $counterUri): array {
         $yearly[$year]   = ($yearly[$year] ?? 0) + $diff;
     }
 
-    $stockDaily = calc_stock_series($counterDaily);
-
     foreach ($daily   as &$v) $v = round($v);
     foreach ($weekly  as &$v) $v = round($v);
     foreach ($monthly as &$v) $v = round($v);
@@ -347,37 +344,135 @@ function calc_consumption(string $counterUri): array {
     $daily   = array_slice($daily,   -30, null, true);
     $weekly  = array_slice($weekly,  -12, null, true);
     $monthly = array_slice($monthly, -12, null, true);
-    $yearly     = array_slice($yearly,     -5,  null, true);
-    $stockDaily = array_slice($stockDaily, -60, null, true);
+    $yearly  = array_slice($yearly,  -5,  null, true);
 
-    return compact('daily', 'weekly', 'monthly', 'yearly', 'stockDaily');
+    return compact('daily', 'weekly', 'monthly', 'yearly');
 }
 
 /**
- * Bestandsverlauf: Vorrat (Lager + Behaelter) je Tag, zurueckgerechnet aus den
- * Bestands-Ereignissen und dem Zaehler. Tage vor dem ersten Eintrag bleiben
- * leer -- fuer sie ist nicht bekannt, wie voll das Lager war.
+ * Vorratsverlauf je Messpunkt: Gesamtvorrat, Lager und Behaelterinhalt.
+ *
+ * Gerechnet wird wie in calc_stock(), nur eben fuer jeden geloggten Zaehlerstand
+ * statt nur fuer den aktuellen: Fuellmenge des letzten Bestands-Eintrags plus
+ * seither nachgetragene Saecke minus das, was der Zaehler seitdem verbrannt hat.
+ * Der Behaelterinhalt kommt aus dem Log (letzter Wert bis zum Zeitpunkt), das
+ * Lager ist die Differenz.
  */
-function calc_stock_series(array $counterDaily): array {
+function stock_rows(int $sinceTs = 0): array {
+    if (!file_exists(LOG_FILE)) return [];
     $events = read_events();
     if (!$events) return [];
 
-    $series = [];
-    foreach ($counterDaily as $day => $counterVal) {
-        $dayEnd = strtotime($day . ' 23:59:59');
-        $base   = null;
+    $counterUri = $GLOBALS['CONFIG']['counter']['uri'];
+    $hopperUri  = $GLOBALS['CONFIG']['hopper']['uri'];
+
+    $lines   = file(LOG_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $counter = [];
+    $hopper  = [];
+    foreach ($lines as $line) {
+        $parts = explode("\t", $line);
+        if (count($parts) < 6) continue;
+        $uri = trim($parts[5]);
+        if ($uri !== $counterUri && $uri !== $hopperUri) continue;
+        $ts = strtotime($parts[0]);
+        if ($ts === false) continue;
+        $val = floatval(str_replace(',', '.', $parts[2]));
+        if ($uri === $counterUri) $counter[$ts] = $val; else $hopper[$ts] = $val;
+    }
+    if (!$counter) return [];
+    ksort($counter);
+    ksort($hopper);
+
+    $hopperTs  = array_keys($hopper);
+    $hopperIdx = 0;
+    $lastHop   = null;
+    $rows      = [];
+
+    foreach ($counter as $ts => $counterVal) {
+        // Behaelterwert bis zu diesem Zeitpunkt nachziehen.
+        while ($hopperIdx < count($hopperTs) && $hopperTs[$hopperIdx] <= $ts) {
+            $lastHop = $hopper[$hopperTs[$hopperIdx]];
+            $hopperIdx++;
+        }
+        if ($ts < $sinceTs) continue;
+
+        $base = null;
         foreach ($events as $e) {
-            if ($e['type'] === 'bestand' && $e['ts'] <= $dayEnd) $base = $e;
+            if ($e['type'] === 'bestand' && $e['ts'] <= $ts) $base = $e;
         }
         if ($base === null) continue;
 
         $sacks = 0.0;
         foreach ($events as $e) {
-            if ($e['type'] === 'sack' && $e['ts'] >= $base['ts'] && $e['ts'] <= $dayEnd) $sacks += $e['kg'];
+            if ($e['type'] === 'sack' && $e['ts'] >= $base['ts'] && $e['ts'] <= $ts) $sacks += $e['kg'];
         }
-        $series[$day] = round($base['kg'] + $base['hopper'] + $sacks - ($counterVal - $base['counter']));
+
+        $total = $base['kg'] + $base['hopper'] + $sacks - ($counterVal - $base['counter']);
+        $rows[] = [
+            'ts'     => $ts,
+            'total'  => round($total, 1),
+            'hopper' => $lastHop,
+            'lager'  => ($lastHop !== null) ? round($total - $lastHop, 1) : null,
+        ];
     }
-    return $series;
+    return $rows;
+}
+
+/** Farben und Namen der drei Vorratskurven -- an einer Stelle, fuer Graph und Kacheln. */
+function stock_series_meta(): array {
+    return [
+        ['key' => 'total',  'name' => 'Vorrat gesamt', 'color' => '#e94560'],
+        ['key' => 'lager',  'name' => 'Lager',         'color' => '#95d5b2'],
+        ['key' => 'hopper', 'name' => 'Behälter',      'color' => '#f0a202'],
+    ];
+}
+
+/** Vorratsverlauf in Stundenaufloesung fuer die kurzen Zeitraeume im Graphen. */
+function calc_stock_timeseries(int $hours = 168): array {
+    $rows = stock_rows(time() - ($hours * 3600));
+    if (!$rows) return ['labels' => [], 'series' => [], 'current' => []];
+
+    $labels  = [];
+    $columns = ['total' => [], 'lager' => [], 'hopper' => []];
+    foreach ($rows as $r) {
+        $labels[] = date('d.m H:i', $r['ts']);
+        foreach ($columns as $key => $_) $columns[$key][] = $r[$key];
+    }
+
+    $series  = [];
+    $current = [];
+    foreach (stock_series_meta() as $m) {
+        $series[] = ['name' => $m['name'], 'data' => $columns[$m['key']], 'color' => $m['color']];
+        $last = null;
+        foreach (array_reverse($columns[$m['key']]) as $v) {
+            if ($v !== null) { $last = $v; break; }
+        }
+        $current[$m['key']] = $last;
+    }
+    return ['labels' => $labels, 'series' => $series, 'current' => $current];
+}
+
+/** Vorratsverlauf je Tag (letzter Wert des Tages) fuer Monat und Jahr. */
+function calc_stock_daily(int $days = 365): array {
+    $rows = stock_rows(strtotime('today') - (($days - 1) * 86400));
+    if (!$rows) return ['labels' => [], 'series' => []];
+
+    $byDay = [];
+    foreach ($rows as $r) $byDay[date('Y-m-d', $r['ts'])] = $r;
+    ksort($byDay);
+
+    $labels  = [];
+    $columns = ['total' => [], 'lager' => [], 'hopper' => []];
+    foreach ($byDay as $day => $r) {
+        $labels[] = date('d.m.', strtotime($day));
+        foreach ($columns as $key => $_) $columns[$key][] = $r[$key];
+    }
+
+    $series = [];
+    foreach (stock_series_meta() as $m) {
+        $series[] = ['name' => $m['name'], 'data' => $columns[$m['key']], 'color' => $m['color']];
+    }
+    return ['labels' => $labels, 'series' => $series];
 }
 
 /**
@@ -835,9 +930,15 @@ if ($action === 'dashboard') {
     $kesselLager = $liveValues[$CONFIG['hero']['uri']] ?? null;
 }
 
-$consumption = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[],'stockDaily'=>[]];
+$consumption     = ['daily'=>[],'weekly'=>[],'monthly'=>[],'yearly'=>[]];
+$stockSeries     = ['labels' => [], 'series' => [], 'current' => []];
+$stockDailySerie = ['labels' => [], 'series' => []];
+$counterNowVerbr = null;
 if ($action === 'verbrauch') {
-    $consumption = calc_consumption($CONFIG['counter']['uri']);
+    $consumption     = calc_consumption($CONFIG['counter']['uri']);
+    $stockSeries     = calc_stock_timeseries(168);
+    $stockDailySerie = calc_stock_daily(365);
+    $counterNowVerbr = current_value($CONFIG['counter']['uri']);
 }
 
 $solarTimeseries = ['labels' => [], 'series' => [], 'current' => []];
@@ -952,11 +1053,22 @@ if ($action === 'menu') {
         .cons-item .cons-unit{font-size:.55em;color:#888}
         .no-data{color:#888;text-align:center;padding:30px 0;font-size:.9em}
         /* Solar */
-        .solar-summary{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px}
-        .solar-card{border-radius:8px;padding:12px;text-align:center;position:relative}
-        .solar-card .s-label{font-size:.7em;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
-        .solar-card .s-val{font-size:2em;font-weight:bold;line-height:1.1}
-        .solar-card .s-unit{font-size:.4em;margin-left:3px;color:#888}
+        .live-summary{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px}
+        .live-card{border-radius:8px;padding:12px;text-align:center;position:relative}
+        .live-card .s-label{font-size:.7em;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+        .live-card .s-val{font-size:2em;font-weight:bold;line-height:1.1}
+        .live-card .s-unit{font-size:.4em;margin-left:3px;color:#888}
+        .range-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+        .range-tabs button{padding:8px 14px;background:#0f3460;color:#eee;border:none;border-radius:6px;cursor:pointer;font-size:.85em;-webkit-tap-highlight-color:transparent}
+        .range-tabs button.active,.range-tabs button:hover,.range-tabs button:active{background:#e94560}
+        .pellet-vorrat{background:linear-gradient(135deg,#3a0d18,#1a0509);border:1px solid #e94560}
+        .pellet-vorrat .s-label,.pellet-vorrat .s-val{color:#e94560}
+        .pellet-lager{background:linear-gradient(135deg,#1b3a2e,#0f2419);border:1px solid #95d5b2}
+        .pellet-lager .s-label,.pellet-lager .s-val{color:#95d5b2}
+        .pellet-behaelter{background:linear-gradient(135deg,#3a2a00,#1a1200);border:1px solid #f0a202}
+        .pellet-behaelter .s-label,.pellet-behaelter .s-val{color:#f0a202}
+        .pellet-zaehler{background:linear-gradient(135deg,#0d2a4a,#071825);border:1px solid #64b5f6}
+        .pellet-zaehler .s-label,.pellet-zaehler .s-val{color:#64b5f6}
         .solar-kollektor{background:linear-gradient(135deg,#3d1a00,#1a0a00);border:1px solid #ff6b35}
         .solar-kollektor .s-label{color:#ff6b35}
         .solar-kollektor .s-val{color:#ff6b35}
@@ -969,7 +1081,7 @@ if ($action === 'menu') {
         .solar-puffer-unten{background:linear-gradient(135deg,#0a1e3a,#050f1e);border:1px solid #4488cc}
         .solar-puffer-unten .s-label{color:#4488cc}
         .solar-puffer-unten .s-val{color:#4488cc}
-        .solar-chart-wrap{position:relative;height:280px}
+        .live-chart-wrap{position:relative;height:280px}
         /* Settings */
         .settings-form label{display:block;color:#95d5b2;font-size:.8em;margin-bottom:3px;margin-top:12px}
         .settings-form input[type="text"]{width:100%;padding:8px 10px;background:#0f3460;color:#eee;border:1px solid #333;border-radius:6px;font-size:.9em;font-family:inherit}
@@ -987,7 +1099,7 @@ if ($action === 'menu') {
             .var-grid{grid-template-columns:repeat(3,1fr);gap:12px}
             .var-card .var-value{font-size:1.5em}
             .chart-wrap{height:300px}
-            .solar-chart-wrap{height:320px}
+            .live-chart-wrap{height:320px}
             .consumption-summary{gap:10px}
             .cons-item .cons-val{font-size:1.6em}
             th,td{padding:8px 12px;font-size:.9em}
@@ -1000,7 +1112,7 @@ if ($action === 'menu') {
             .hero-card .hero-value{font-size:6em}
             .var-grid{grid-template-columns:repeat(4,1fr)}
             .chart-wrap{height:350px}
-            .solar-chart-wrap{height:360px}
+            .live-chart-wrap{height:360px}
         }
     </style>
 </head>
@@ -1130,26 +1242,146 @@ if ($action === 'menu') {
     <?php elseif($action==='verbrauch'):?>
 
         <div class="card">
-            <h2>Pelletverbrauch</h2>
-            <p class="hint">
-                Basis ist der Zähler „<?=htmlspecialchars($CONFIG['counter']['name'])?>" — die tatsächlich
-                verbrannten kg. Der Bestandsverlauf zeigt Lager + Behälter aus der eigenen Bilanz.
-            </p>
+            <h2>Pelletvorrat</h2>
             <?php
-                $hasStock = !empty($consumption['stockDaily']);
+                $cur   = $stockSeries['current'];
+                $fmtKg = fn($v) => $v !== null ? number_format((float)$v, 0, ',', '.') : '--';
+            ?>
+            <div class="live-summary">
+                <div class="live-card pellet-vorrat">
+                    <div class="s-label">Vorrat gesamt</div>
+                    <div class="s-val"><?=$fmtKg($cur['total'] ?? null)?><span class="s-unit">kg</span></div>
+                </div>
+                <div class="live-card pellet-lager">
+                    <div class="s-label">Lager</div>
+                    <div class="s-val"><?=$fmtKg($cur['lager'] ?? null)?><span class="s-unit">kg</span></div>
+                </div>
+                <div class="live-card pellet-behaelter">
+                    <div class="s-label">Behälter</div>
+                    <div class="s-val"><?=$fmtKg($cur['hopper'] ?? null)?><span class="s-unit">kg</span></div>
+                </div>
+                <div class="live-card pellet-zaehler">
+                    <div class="s-label"><?=htmlspecialchars($CONFIG['counter']['name'])?></div>
+                    <div class="s-val"><?=$fmtKg($counterNowVerbr)?><span class="s-unit">kg</span></div>
+                </div>
+            </div>
+
+            <?php if(!empty($stockSeries['labels'])):?>
+                <div class="range-tabs">
+                    <button class="active" onclick="setStockRange(24,this)">24 Stunden</button>
+                    <button onclick="setStockRange(48,this)">48 Stunden</button>
+                    <button onclick="setStockRange(168,this)">Woche</button>
+                    <button onclick="setStockRange('month',this)">Monat</button>
+                    <button onclick="setStockRange('year',this)">Jahr</button>
+                </div>
+                <p class="hint" id="stock-chart-note" style="margin:0 0 8px"></p>
+                <div class="live-chart-wrap">
+                    <canvas id="stock-chart"></canvas>
+                </div>
+
+                <script>
+                const stockLabels    = <?=json_encode($stockSeries['labels'])?>;
+                const stockSeries    = <?=json_encode($stockSeries['series'])?>;
+                const stockDayLabels = <?=json_encode($stockDailySerie['labels'])?>;
+                const stockDaySeries = <?=json_encode($stockDailySerie['series'])?>;
+                let stockChart = null;
+
+                function setStockRange(range, btn) {
+                    document.querySelectorAll('.range-tabs button').forEach(b=>b.classList.remove('active'));
+                    btn.classList.add('active');
+                    buildStockChart(range);
+                }
+
+                function buildStockChart(range) {
+                    // Stundenwerte fuer kurze Zeitraeume, Tageswerte fuer Monat und Jahr.
+                    const daily  = (range === 'month' || range === 'year');
+                    const days   = (range === 'month') ? 30 : 365;
+                    const srcLab = daily ? stockDayLabels : stockLabels;
+                    const srcSer = daily ? stockDaySeries : stockSeries;
+                    const n      = srcLab.length;
+                    const start  = Math.max(0, n - (daily ? days : range));
+                    const labels = srcLab.slice(start);
+
+                    const note = document.getElementById('stock-chart-note');
+                    if (note) {
+                        note.textContent = daily
+                            ? 'Tageswerte (Stand am Tagesende) — ' + labels.length + ' Tage'
+                            : '';
+                    }
+
+                    const datasets = srcSer.map(s => ({
+                        label:           s.name,
+                        data:            s.data.slice(start),
+                        borderColor:     s.color,
+                        backgroundColor: s.color + '18',
+                        borderWidth:     2,
+                        pointRadius:     (!daily && range <= 48) ? 3 : (daily && labels.length <= 40 ? 2 : 0),
+                        pointHoverRadius:5,
+                        fill:            false,
+                        tension:         0.35,
+                        spanGaps:        true
+                    }));
+
+                    if (stockChart) stockChart.destroy();
+                    const ctx = document.getElementById('stock-chart').getContext('2d');
+                    stockChart = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            responsive:          true,
+                            maintainAspectRatio: false,
+                            interaction: { mode:'index', intersect:false },
+                            plugins: {
+                                legend: {
+                                    display: true,
+                                    labels:  { color:'#eee', boxWidth:12, font:{size:11} }
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: ctx => {
+                                            const v = ctx.parsed.y;
+                                            return ctx.dataset.label + ': ' + (v !== null ? v.toFixed(0) + ' kg' : '--');
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    ticks: { color:'#888', maxRotation:45, maxTicksLimit:24 },
+                                    grid:  { color:'rgba(255,255,255,0.05)' }
+                                },
+                                y: {
+                                    ticks: { color:'#888', callback: v => v + ' kg' },
+                                    grid:  { color:'rgba(255,255,255,0.08)' }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                buildStockChart(24);
+                </script>
+            <?php else:?>
+                <div class="no-data">
+                    Noch kein Vorratsverlauf vorhanden.<br>
+                    <small>Dafür braucht es einen Bestands-Eintrag auf dem Dashboard und mindestens einen
+                    geloggten Zählerstand.</small>
+                </div>
+            <?php endif?>
+        </div>
+
+        <div class="card">
+            <h2>Verbrauchsstatistik</h2>
+            <?php
                 $hasConsumption = !empty($consumption['daily']) || !empty($consumption['weekly'])
                         || !empty($consumption['monthly']) || !empty($consumption['yearly']);
             ?>
-            <?php if($hasStock || $hasConsumption):?>
+            <?php if($hasConsumption):?>
                 <?php
-                    $today     = date('Y-m-d');
-                    $thisWeek  = date('o-\KW');
-                    $thisMonth = date('Y-m');
-                    $thisYear  = date('Y');
-                    $consToday = $consumption['daily'][$today] ?? 0;
-                    $consWeek  = $consumption['weekly'][$thisWeek] ?? 0;
-                    $consMonth = $consumption['monthly'][$thisMonth] ?? 0;
-                    $consYear  = $consumption['yearly'][$thisYear] ?? 0;
+                    $consToday = $consumption['daily'][date('Y-m-d')]  ?? 0;
+                    $consWeek  = $consumption['weekly'][date('o-\KW')] ?? 0;
+                    $consMonth = $consumption['monthly'][date('Y-m')]  ?? 0;
+                    $consYear  = $consumption['yearly'][date('Y')]     ?? 0;
                 ?>
                 <div class="consumption-summary">
                     <div class="cons-item">
@@ -1171,47 +1403,50 @@ if ($action === 'menu') {
                 </div>
 
                 <div class="chart-tabs">
-                    <button class="active" onclick="showChart('stock',this)">Bestandsverlauf</button>
-                    <button onclick="showChart('daily',this)">Taeglich</button>
+                    <button class="active" onclick="showChart('daily',this)">Taeglich</button>
                     <button onclick="showChart('weekly',this)">Woechentlich</button>
                     <button onclick="showChart('monthly',this)">Monatlich</button>
                     <button onclick="showChart('yearly',this)">Jaehrlich</button>
                 </div>
                 <div class="chart-wrap">
-                    <canvas id="chart-stock" class="active"></canvas>
-                    <canvas id="chart-daily"></canvas>
+                    <canvas id="chart-daily" class="active"></canvas>
                     <canvas id="chart-weekly"></canvas>
                     <canvas id="chart-monthly"></canvas>
                     <canvas id="chart-yearly"></canvas>
                 </div>
 
+                <details class="explain">
+                    <summary>Was wird hier gezaehlt?</summary>
+                    <p class="hint">
+                        Basis ist der Zähler „<?=htmlspecialchars($CONFIG['counter']['name'])?>" — die
+                        tatsächlich verbrannten kg. Der Rückgang des Lagerwerts taugt dafür nicht: der
+                        Kessel verbrennt aus dem Behälter, der schubweise nachgesaugt wird, und an
+                        Liefertagen fiele der Tagesverbrauch ganz aus.
+                    </p>
+                </details>
+
                 <script>
                 const chartData = {
-                    stock:   {labels:<?=json_encode(array_keys($consumption['stockDaily']))?>,   data:<?=json_encode(array_values($consumption['stockDaily']))?>},
                     daily:   {labels:<?=json_encode(array_keys($consumption['daily']))?>,   data:<?=json_encode(array_values($consumption['daily']))?>},
                     weekly:  {labels:<?=json_encode(array_keys($consumption['weekly']))?>,  data:<?=json_encode(array_values($consumption['weekly']))?>},
                     monthly: {labels:<?=json_encode(array_keys($consumption['monthly']))?>, data:<?=json_encode(array_values($consumption['monthly']))?>},
                     yearly:  {labels:<?=json_encode(array_keys($consumption['yearly']))?>,  data:<?=json_encode(array_values($consumption['yearly']))?>}
                 };
                 const charts = {};
-                function makeChart(id, labels, data) {
+
+                function makeChart(id) {
                     const ctx = document.getElementById('chart-'+id).getContext('2d');
-                    const isStock = (id === 'stock');
                     charts[id] = new Chart(ctx, {
-                        type: isStock ? 'line' : 'bar',
+                        type: 'bar',
                         data: {
-                            labels: labels,
+                            labels: chartData[id].labels,
                             datasets: [{
-                                label: isStock ? 'Vorrat gesamt (kg)' : 'Verbrauch (kg)',
-                                data: data,
-                                backgroundColor: isStock ? 'rgba(149,213,178,0.15)' : 'rgba(233,69,96,0.7)',
-                                borderColor: isStock ? '#95d5b2' : '#e94560',
-                                borderWidth: isStock ? 2 : 1,
-                                borderRadius: isStock ? 0 : 4,
-                                fill: isStock,
-                                tension: 0.3,
-                                pointBackgroundColor: isStock ? '#95d5b2' : undefined,
-                                pointRadius: isStock ? 4 : undefined
+                                label: 'Verbrauch (kg)',
+                                data: chartData[id].data,
+                                backgroundColor: 'rgba(233,69,96,0.7)',
+                                borderColor: '#e94560',
+                                borderWidth: 1,
+                                borderRadius: 4
                             }]
                         },
                         options: {
@@ -1223,21 +1458,21 @@ if ($action === 'menu') {
                             },
                             scales: {
                                 x: {ticks:{color:'#888',maxRotation:45},grid:{color:'rgba(255,255,255,0.05)'}},
-                                y: {beginAtZero:!isStock,ticks:{color:'#888',callback:function(v){return v+' kg'}},grid:{color:'rgba(255,255,255,0.08)'}}
+                                y: {beginAtZero:true,ticks:{color:'#888',callback:function(v){return v+' kg'}},grid:{color:'rgba(255,255,255,0.08)'}}
                             }
                         }
                     });
                 }
+
                 function showChart(id, btn) {
                     document.querySelectorAll('.chart-tabs button').forEach(b=>b.classList.remove('active'));
                     document.querySelectorAll('.chart-wrap canvas').forEach(c=>c.classList.remove('active'));
                     btn.classList.add('active');
                     document.getElementById('chart-'+id).classList.add('active');
-                    if (!charts[id]) makeChart(id, chartData[id].labels, chartData[id].data);
+                    if (!charts[id]) makeChart(id);
                 }
-                if (chartData.stock.labels.length > 0) {
-                    makeChart('stock', chartData.stock.labels, chartData.stock.data);
-                }
+
+                if (chartData.daily.labels.length > 0) makeChart('daily');
                 </script>
             <?php else:?>
                 <div class="no-data">
@@ -1264,27 +1499,27 @@ if ($action === 'menu') {
                 $fmtVal = fn($v) => $v !== null ? number_format($v, 1, ',', '.') : '--';
             ?>
 
-            <div class="solar-summary">
-                <div class="solar-card solar-kollektor">
+            <div class="live-summary">
+                <div class="live-card solar-kollektor">
                     <div class="s-label">Kollektor</div>
                     <div class="s-val"><?=$fmtVal($sc[$kollUri] ?? null)?><span class="s-unit">°C</span></div>
                 </div>
-                <div class="solar-card solar-aussen">
+                <div class="live-card solar-aussen">
                     <div class="s-label">Außentemperatur</div>
                     <div class="s-val"><?=$fmtVal($sc[$aussenUri] ?? null)?><span class="s-unit">°C</span></div>
                 </div>
-                <div class="solar-card solar-puffer-oben">
+                <div class="live-card solar-puffer-oben">
                     <div class="s-label">Puffer oben</div>
                     <div class="s-val"><?=$fmtVal($sc[$pufOUri] ?? null)?><span class="s-unit">°C</span></div>
                 </div>
-                <div class="solar-card solar-puffer-unten">
+                <div class="live-card solar-puffer-unten">
                     <div class="s-label">Puffer unten</div>
                     <div class="s-val"><?=$fmtVal($sc[$pufUUri] ?? null)?><span class="s-unit">°C</span></div>
                 </div>
             </div>
 
             <?php if(!empty($solarTimeseries['labels'])):?>
-                <div class="chart-tabs">
+                <div class="range-tabs">
                     <button class="active" onclick="setSolarRange(24,this)">24 Stunden</button>
                     <button onclick="setSolarRange(48,this)">48 Stunden</button>
                     <button onclick="setSolarRange(168,this)">Woche</button>
@@ -1292,7 +1527,7 @@ if ($action === 'menu') {
                     <button onclick="setSolarRange('year',this)">Jahr</button>
                 </div>
                 <p class="hint" id="solar-chart-note" style="margin:0 0 8px"></p>
-                <div class="solar-chart-wrap">
+                <div class="live-chart-wrap">
                     <canvas id="solar-chart"></canvas>
                 </div>
 
@@ -1304,7 +1539,7 @@ if ($action === 'menu') {
                 let solarChart = null;
 
                 function setSolarRange(range, btn) {
-                    document.querySelectorAll('.chart-tabs button').forEach(b=>b.classList.remove('active'));
+                    document.querySelectorAll('.range-tabs button').forEach(b=>b.classList.remove('active'));
                     btn.classList.add('active');
                     buildSolarChart(range);
                 }

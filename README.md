@@ -10,7 +10,8 @@ Web-Dashboard zur Überwachung und Protokollierung von Pelletverbrauch und Solar
 
 - **Live-Dashboard** mit Vorratsbilanz (Lager + Behälter) und konfigurierbaren Kacheln
 - **Eigene Vorratsbilanz** statt des Lagerwerts des Kessels — inklusive Nachtragen von Säcken und Lieferungen
-- **Bestandsverlauf** als Linienchart — zeigt wie der Pelletvorrat über die Tage fällt
+- **Vorratsverlauf** als Linienchart mit Vorrat, Lager und Behälter
+  (24 h / 48 h / Woche als Stundenwerte, Monat / Jahr als Tageswerte)
 - **Verbrauchsstatistik** aus dem Zähler der tatsächlich verbrannten kg (täglich / wöchentlich / monatlich / jährlich)
 - **Solar-Tab** mit Linien-Chart für Kollektor, Puffer oben/unten und Außentemperatur
   (24 h / 48 h / Woche als Stundenwerte, Monat / Jahr als Tageshöchstwerte)
@@ -70,6 +71,21 @@ Die Konfiguration wird in `config.json` gespeichert und ist vollständig über d
 | `solar` | Solar-Variablen für den Solar-Tab (Kurven-Logging) |
 
 Kacheln können direkt aus dem **Menubaum** per Klick hinzugefügt (+) oder als Hero gesetzt (★) werden.
+
+### Gleicher Aufbau für Pellets und Solar
+
+Die Seiten **Verbrauch** und **Solar** sind identisch aufgebaut, damit man sich nur eine Bedienung
+merken muss:
+
+| | Verbrauch | Solar |
+|---|---|---|
+| Obere Karte | Pelletvorrat | Solaranlage |
+| Live-Kacheln | Vorrat gesamt, Lager, Behälter, Gesamtverbrauch | Kollektor, Außentemperatur, Puffer oben/unten |
+| Verlaufs-Graph | Vorrat, Lager, Behälter in kg | vier Temperaturkurven in °C |
+| Zeitbereiche | 24 h · 48 h · Woche · Monat · Jahr | 24 h · 48 h · Woche · Monat · Jahr |
+| Lange Bereiche | Tageswerte (Stand am Tagesende) | Tageshöchstwerte |
+| Untere Karte | Verbrauchsstatistik in kg | Solarstatistik in Stunden |
+| Statistik-Tabs | täglich · wöchentlich · monatlich · jährlich | täglich · wöchentlich · monatlich · jährlich · Spitzentemperatur |
 
 ### Vorratsbilanz — warum nicht der Lagerwert des Kessels?
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.8 — Verbrauchsseite im Solar-Layout (2026-09-20)
+
+### Geändert
+- Die Seite **Verbrauch** ist jetzt genauso aufgebaut wie **Solar**: oben die Karte „Pelletvorrat" mit
+  vier Live-Kacheln (Vorrat gesamt, Lager, Behälter, Gesamtverbrauch) und dem Verlaufs-Graphen mit den
+  Zeitbereichen 24 h / 48 h / Woche / Monat / Jahr, darunter die Karte „Verbrauchsstatistik" mit den
+  Balken-Tabs.
+- Der Graph zeigt **drei Kurven**: Vorrat gesamt, Lager und Behälter. Damit ist das schubweise
+  Nachsaugen in den 30-kg-Behälter direkt sichtbar.
+- Für Monat und Jahr zeigt der Graph **Tageswerte** (Stand am Tagesende) statt Stundenwerte.
+- Der bisherige Tab „Bestandsverlauf" in der Statistik entfällt — den Verlauf zeigt jetzt der Graph
+  darüber, mit mehr Zeitbereichen und feinerer Auflösung.
+- Der Erklärtext zur Zählerbasis ist eingeklappt („Was wird hier gezählt?"), wie auf der Solarseite.
+
+### Intern
+- Gemeinsame CSS-Bausteine für beide Seiten (`live-summary`, `live-card`, `live-chart-wrap`,
+  `range-tabs`) statt solar-spezifischer Klassen.
+- `calc_stock_series()` entfällt, ersetzt durch `stock_rows()` mit `calc_stock_timeseries()` und
+  `calc_stock_daily()` — dieselbe Rechnung wie die Hero-Bilanz, nur über die Zeit.
+
+---
+
 ## v0.7 — Solarstatistik (2026-09-20)
 
 ### Neu
