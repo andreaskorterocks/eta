@@ -68,6 +68,12 @@ if [ -f "$CONFIG_FILE" ]; then
     HOPPER_NAME="${HOPPER_NAME:-Inhalt Pelletsbehälter}"
     already_logged "$HOPPER_URI" || fetch_and_log "$HOPPER_URI" "$HOPPER_NAME"
 
+    STATUS_URI=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('hopper_status',{}).get('uri',''))" 2>/dev/null)
+    STATUS_NAME=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('hopper_status',{}).get('name',''))" 2>/dev/null)
+    STATUS_URI="${STATUS_URI:-/40/10021/0/0/12005}"
+    STATUS_NAME="${STATUS_NAME:-Pelletsbehälter Status}"
+    already_logged "$STATUS_URI" || fetch_and_log "$STATUS_URI" "$STATUS_NAME"
+
     # Solarstatistik: Pumpe und Speicherfuehler mitloggen (Basis fuer die spaetere
     # Umstellung der Statistik auf echte Pumpenlaufzeit).
     PUMP_URI=$(python3 -c "import json;c=json.load(open('$CONFIG_FILE'));print(c.get('solar_stats',{}).get('pump',{}).get('uri',''))" 2>/dev/null)
@@ -111,6 +117,7 @@ else
         "/40/10201/0/0/12015|Lager Vorrat"
         "/40/10021/0/0/12016|Gesamtverbrauch"
         "/40/10021/0/0/12011|Inhalt Pelletsbehälter"
+        "/40/10021/0/0/12005|Pelletsbehälter Status"
         "/40/10021/0/0/12014|Verbrauch seit Wartung"
         "/40/10021/0/0/12012|Verbrauch seit Entaschung"
         "/40/10021/0/0/12013|Verbrauch seit Aschebox leeren"

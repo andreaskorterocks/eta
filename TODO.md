@@ -30,6 +30,11 @@ Stand: 2026-09-20 — gegen den Code-Stand verifiziert, nicht blind abgehakt.
       der echte Betrieb statt nur „Sonne war da". Auflösung bleibt durch das stündliche Logging bei ±1 h
       pro Tag; feiner ginge nur mit häufigerem Cronjob.
 
+- [ ] **Behälter-Status auswerten** (ab 20.09.2026 im Log). Springt `Pelletsbehälter Status` nach dem
+      Saugen um 19:00 auf „Voll", passt der gerechnete Nennwert von 30 kg. Bleibt er dauerhaft auf
+      „Nicht voll", ist der echte Inhalt kleiner — dann ist der Startbestand der Bilanz um ein paar kg
+      zu hoch (einmaliger Versatz, kein auflaufender Fehler) und beim Kalibrieren zu berücksichtigen.
+
 ## Bewusst entschieden
 
 - **Datendateien bleiben im Web-Dokumentenstamm** (`/volume1/web/eta/`): `pellet_verbrauch.txt`,

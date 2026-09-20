@@ -13,6 +13,10 @@
         "uri": "/40/10021/0/0/12011",
         "name": "Inhalt Pelletsbeh\u00e4lter"
     },
+    "hopper_status": {
+        "uri": "/40/10021/0/0/12005",
+        "name": "Pelletsbeh\u00e4lter Status"
+    },
     "sack_kg": 15,
     "tiles": [
         {

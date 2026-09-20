@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.82 — Behälter-Status im Log (2026-09-20)
+
+### Neu
+- Die Statusvariable `Pelletsbehälter` (`/40/10021/0/0/12005`, „Voll" / „Nicht voll") wird stündlich
+  mitgeloggt (`hopper_status`). Hintergrund: `Inhalt Pelletsbehälter` ist ein gerechneter Nennwert —
+  er steht nach dem Saugen auf 30 kg, während der Status zeitgleich „Nicht voll" melden kann. Das Log
+  zeigt nach ein paar Tagen, ob der Nennwert zu optimistisch ist.
+
+---
+
 ## v0.81 — Durchgehende Zeitachse (2026-09-20)
 
 ### Behoben

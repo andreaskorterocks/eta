@@ -26,6 +26,13 @@ define('DEFAULT_CONFIG', json_encode([
         'uri'  => '/40/10021/0/0/12011',
         'name' => 'Inhalt Pelletsbehälter',
     ],
+    // Statusmeldung des Behaelters ("Voll"/"Nicht voll"). Der Inhalt oben ist ein
+    // gerechneter Nennwert -- dieser Status zeigt, ob der Kessel ihn auch als voll
+    // ansieht. Wird nur geloggt, nicht angezeigt.
+    'hopper_status' => [
+        'uri'  => '/40/10021/0/0/12005',
+        'name' => 'Pelletsbehälter Status',
+    ],
     // Gebindegroesse fuer den Sack-Button auf dem Dashboard.
     'sack_kg' => 15,
     'tiles' => [
@@ -64,6 +71,7 @@ function load_config(): array {
             if (!isset($config['solar']))    $config['solar']    = $defaults['solar'];
             if (!isset($config['counter']))  $config['counter']  = $defaults['counter'];
             if (!isset($config['hopper']))   $config['hopper']   = $defaults['hopper'];
+            if (!isset($config['hopper_status'])) $config['hopper_status'] = $defaults['hopper_status'];
             if (!isset($config['sack_kg']))  $config['sack_kg']  = $defaults['sack_kg'];
             $config['solar_stats'] = array_merge($defaults['solar_stats'], $config['solar_stats'] ?? []);
             return $config;
@@ -892,7 +900,7 @@ if ($action === 'fetchall') {
     }
     // Zaehler und Behaelter sind die Basis der Bilanz -- immer mitloggen, auch
     // wenn sie nicht als Kachel konfiguriert sind.
-    foreach ([$CONFIG['counter'], $CONFIG['hopper'],
+    foreach ([$CONFIG['counter'], $CONFIG['hopper'], $CONFIG['hopper_status'],
               $CONFIG['solar_stats']['pump'], $CONFIG['solar_stats']['store']] as $must) {
         if (in_array($must['uri'], $loggedUris)) continue;
         $data = read_variable($must['uri']);
